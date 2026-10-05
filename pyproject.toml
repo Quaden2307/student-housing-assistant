@@ -1,0 +1,53 @@
+[project]
+name = "student-housing-assistant"
+version = "0.1.0"
+description = "Fair-price check for Waterloo student rentals: a model trained on scraped Kitchener-Waterloo listings scores one listing's asking price."
+readme = "README.md"
+authors = [
+    { name = "Caden Sun", email = "cadensun07@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The import package is ``housing`` (src/housing), not the project name.
+module-name = "housing"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, B bugbear, UP pyupgrade, D pydocstyle, SIM simplify.
+# D enforces the "docstrings on public functions" convention from CLAUDE.md.
+select = ["E", "W", "F", "I", "B", "UP", "D", "SIM"]
+ignore = [
+    "D100", # module docstring not required
+    "D104", # package docstring not required
+    "D105", # magic method docstring not required
+    "D107", # __init__ docstring not required
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

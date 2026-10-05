@@ -1,0 +1,85 @@
+# Student Housing Assistant .gitignore
+# Rule from HANDOFF.md sections 5 and 6: nothing under data/ is committed except the
+# 100-row data/sample.csv. Never commit scraped data, the database or secrets.
+
+# ---- Data -------------------------------------------------------------------
+# Named explicitly (HANDOFF section 10, task 1), then everything else under data/.
+data/raw/
+data/housing.db
+data/housing.db-wal
+data/housing.db-shm
+data/*
+!data/sample.csv
+
+# SQLite databases anywhere else (HOUSING_DB_PATH can point outside data/)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Trained models and other large binary artefacts
+*.pkl
+*.joblib
+*.parquet
+*.feather
+*.h5
+
+# ---- Secrets ----------------------------------------------------------------
+# Discord webhook URL, LLM API keys, anything with a token in it
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# ---- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments (uv creates .venv/)
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Tooling caches and reports --------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.log
+
+# ---- Jupyter ----------------------------------------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+profile_default/
+ipython_config.py
+
+# ---- OS and editors ---------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
