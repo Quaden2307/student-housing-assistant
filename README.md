@@ -10,7 +10,7 @@ Decisions are logged in `docs/decisions.md`.
 
 ## Status
 
-Oct 4, 2026: repo set up. Next: the SQLite database, then the first Kijiji sweep.
+Oct 4, 2026: repo and SQLite database set up. Next: the first Kijiji sweep.
 
 ## Setup
 
@@ -18,6 +18,7 @@ Requires [uv](https://docs.astral.sh/uv/). Python 3.11 is pinned in `.python-ver
 
 ```sh
 uv sync                                  # create .venv and install dependencies
+uv run python -m housing.db.migrate      # create data/housing.db (gitignored)
 uv run pytest                            # tests
 uv run ruff check . && uv run ruff format --check .
 ```
