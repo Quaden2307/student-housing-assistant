@@ -20,16 +20,17 @@ from pathlib import Path
 from housing.db import connect
 from housing.paths import db_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Version written to ``PRAGMA user_version`` after ``schema.sql`` is applied.
 
-History: 1 = the five section 5 tables (2026-10-04); 2 = adds ``listing_attributes`` (2026-10-14).
+History: 1 = the five section 5 tables (2026-10-04); 2 = adds ``listing_attributes`` (2026-10-14);
+3 = adds the Wayback backfill tables ``archive_*`` (2026-10-16).
 """
 
 TABLES = ("listings", "snapshots", "units", "features", "predictions")
 """The five tables of HANDOFF.md section 5, in dependency order."""
 
-AUX_TABLES = ("listing_attributes",)
+AUX_TABLES = ("listing_attributes", "archive_captures", "archive_sightings", "archive_listings")
 """Auxiliary tables outside the contract (see schema.sql)."""
 
 

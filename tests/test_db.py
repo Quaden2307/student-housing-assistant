@@ -105,7 +105,12 @@ def insert_listing(conn, source_id="123"):
 
 def test_creates_exactly_the_contract_and_auxiliary_tables(conn):
     assert table_names(conn) == sorted((*TABLES, *AUX_TABLES))
-    assert AUX_TABLES == ("listing_attributes",)
+    assert AUX_TABLES == (
+        "listing_attributes",
+        "archive_captures",
+        "archive_sightings",
+        "archive_listings",
+    )
 
 
 def test_listing_attributes_columns(conn):
@@ -135,7 +140,7 @@ def test_primary_keys(conn):
 def test_migrate_is_idempotent_and_records_version(conn):
     insert_listing(conn)
     assert migrate(conn) == SCHEMA_VERSION
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
     assert table_names(conn) == sorted((*TABLES, *AUX_TABLES))
     assert conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 1
 
