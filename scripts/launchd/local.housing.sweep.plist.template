@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily sweep as a macOS launchd user agent. Render and install with
+  scripts/install_launchd.sh; the rendered copy holds absolute paths and is gitignored.
+
+  The repo must live outside ~/Desktop, ~/Documents, ~/Downloads and iCloud Drive:
+  macOS protects those (TCC) and launchd fails with EX_CONFIG (78) before Python starts.
+  If the Mac is asleep at the scheduled time, launchd runs the job when it wakes.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.housing.sweep</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/python</string>
+        <string>scripts/sweep.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__REPO__/logs/sweep.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/logs/sweep.err.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

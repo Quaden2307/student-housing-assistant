@@ -83,3 +83,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+context.md
+# Daily job logs and the rendered launchd plist
+logs/
+scripts/launchd/*.plist

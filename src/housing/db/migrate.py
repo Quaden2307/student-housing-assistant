@@ -20,11 +20,17 @@ from pathlib import Path
 from housing.db import connect
 from housing.paths import db_path
 
-SCHEMA_VERSION = 1
-"""Version written to ``PRAGMA user_version`` after ``schema.sql`` is applied."""
+SCHEMA_VERSION = 2
+"""Version written to ``PRAGMA user_version`` after ``schema.sql`` is applied.
+
+History: 1 = the five section 5 tables (2026-10-04); 2 = adds ``listing_attributes`` (2026-10-14).
+"""
 
 TABLES = ("listings", "snapshots", "units", "features", "predictions")
 """The five tables of HANDOFF.md section 5, in dependency order."""
+
+AUX_TABLES = ("listing_attributes",)
+"""Auxiliary tables outside the contract (see schema.sql)."""
 
 
 def schema_sql() -> str:
@@ -59,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = connect(path)
     version = migrate(conn)
     print(f"{path}  (schema version {version})")
-    for table in TABLES:
+    for table in (*TABLES, *AUX_TABLES):
         (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         print(f"  {table:12s} {count:>7d} rows")
     conn.close()

@@ -1,4 +1,4 @@
-"""Repo-anchored file locations.
+"""Repo-anchored file locations and the ``.env`` file.
 
 Everything that reads or writes under the repository (the unit schema, ``data/``,
 the SQLite database) goes through this module so notebooks, scripts and tests
@@ -9,6 +9,11 @@ tests point at a temporary directory:
 
 - ``HOUSING_DATA_DIR``: replaces ``<repo>/data``.
 - ``HOUSING_DB_PATH``: replaces ``<data dir>/housing.db``.
+
+``.env`` (gitignored; see ``.env.example``) holds ``HOUSING_HASH_SALT`` and
+``DISCORD_WEBHOOK_URL``. It is loaded here, when the package is first imported, so every
+entry point (the CLIs, notebooks, tests) sees the same values. A variable already set in
+the environment wins over the file.
 """
 
 from __future__ import annotations
@@ -16,11 +21,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 """The repository root: the directory that holds ``pyproject.toml`` and ``HANDOFF.md``."""
 
 SCHEMA_PATH: Path = REPO_ROOT / "schema" / "unit_schema.yaml"
 """The unit schema contract (HANDOFF section 3)."""
+
+load_dotenv(REPO_ROOT / ".env")
 
 
 def data_dir() -> Path:

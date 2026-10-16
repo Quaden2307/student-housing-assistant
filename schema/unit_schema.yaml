@@ -1,0 +1,146 @@
+# Unit schema: the contract from HANDOFF.md section 3.
+#
+# The scraper, the text extractor, the form and the model all read this file through
+# housing.schema.load_schema(). If two of them disagree about what a field means, this
+# file settles it. Changing it needs Caden's sign-off and an entry in docs/decisions.md.
+#
+# Asking price is deliberately NOT a schema field. It is the model target when training
+# and the value we compare against when scoring, so it travels separately from the unit
+# (snapshots.price in the database) and is never a feature.
+#
+# The extraction conventions written into the descriptions were decided on 2026-10-14.
+
+version: 1
+
+notes:
+  - Every field must be readable from a typical listing page and easy for a person to
+    type into a form. A field that fails either test gets cut.
+  - A missing optional value is null, never a guessed value.
+  - Derived fields are computed by us from the fields above and never entered by anyone;
+    they can be rebuilt at any time.
+  - Asking price is not a field here. It is the target when training and the comparison
+    value when scoring, and is carried separately from the unit.
+
+# Required. No prediction without these.
+required:
+  - name: unit_type
+    type: enum
+    values: [room, studio, 1bed, 2bed, 3plus, house]
+    description: >-
+      What is being rented. `room` is one bedroom in a shared house or apartment,
+      including per-room ads posted under whole-unit categories. `house` when the source
+      says house, townhouse or duplex; otherwise by bedroom count: `studio` for 0
+      bedrooms, then `1bed`, `2bed`, `3plus`.
+
+  - name: bedrooms
+    type: int
+    min: 1
+    description: >-
+      Total bedrooms in the whole unit. For a `room` listing, the whole house's bedroom
+      count, not 1. A studio is recorded as 1 so that price_per_bedroom is defined.
+
+  - name: lat
+    type: float
+    min: -90
+    max: 90
+    description: >-
+      Latitude. The index card's coordinates are used first (five decimals, a postal-code
+      centroid when the ad has no street number); the detail page's only fill a gap, because
+      Kijiji rounds them to about a kilometre when the pin is hidden. Other sources: geocoded
+      from the address, intersection or postal code.
+
+  - name: lon
+    type: float
+    min: -180
+    max: 180
+    description: >-
+      Longitude, with the same rule as lat.
+
+  - name: lease_term
+    type: enum
+    values: [sublet_4mo, 8mo, 12mo, month_to_month, unknown]
+    description: Length of the lease on offer. `unknown` when the listing does not say.
+
+  - name: move_in_month
+    type: int
+    min: 1
+    max: 12
+    description: >-
+      Month the unit becomes available (1 = January). The Sept / Jan / May cycle moves
+      prices. Stored only when the listing states a move-in date or month; never
+      imputed, for example from the posting date.
+
+# Optional. Missing is allowed and is represented as null, never as a guessed value.
+optional:
+  - name: utilities_included
+    type: bool
+    description: >-
+      True when heat, hydro and water are all included in the rent; internet does not count.
+      An explicit statement in the listing text ("all inclusive", "plus utilities") beats
+      Kijiji's three attribute flags, which posters leave unticked. Null when nothing says.
+
+  - name: furnished
+    type: bool
+    description: >-
+      Whether the unit (or room) comes furnished. The text's explicit statement
+      ("fully furnished", "unfurnished", "not furnished") beats the attribute flag. Null
+      when the listing does not say.
+
+  - name: bathrooms
+    type: float
+    description: Number of bathrooms in the whole unit, as listed (1.5 for one full and one half).
+
+  - name: laundry_in_unit
+    type: bool
+    description: >-
+      True for a washer and dryer inside the unit; false for shared or coin laundry in
+      the building. Null when the listing does not say.
+
+  - name: building_type
+    type: enum
+    values: [house, lowrise, purpose_built_student, unknown]
+    description: >-
+      `purpose_built_student` from a known-building registry or explicit "student
+      building" wording; `house` for houses, basements and townhouses; otherwise
+      `unknown`. Never `lowrise` by default: use it only when the source says so.
+
+  - name: year_built_after_2018
+    type: bool
+    description: >-
+      Units first occupied after Nov 15, 2018 are exempt from Ontario rent control. Filled
+      only from the known-building registry's first-occupancy year or wording about the
+      building's age ("new build", "new construction", "newly built", "built in 2019" or
+      later); "brand new unit" is a renovation, not a build year. Otherwise null.
+
+# Derived by us, never entered by anyone. Rebuilt from the fields above at any time.
+derived:
+  - name: price_per_bedroom
+    type: float
+    target: true
+    how: "`room`: the asking price. Otherwise asking price / bedrooms."
+    description: Asking price per bedroom per month, in dollars. This is the model target.
+
+  - name: walk_uw_min
+    type: float
+    how: Haversine distance to the UW campus in v1; OSRM walking time later if someone wants it.
+    description: Walking time to the University of Waterloo, in minutes.
+
+  - name: walk_laurier_min
+    type: float
+    how: Haversine distance to the Laurier campus in v1; OSRM walking time later if someone wants it.
+    description: Walking time to Wilfrid Laurier University, in minutes.
+
+  - name: ion_distance_m
+    type: float
+    how: Distance to the nearest ION LRT stop (stop coordinates hardcoded from the GRT GTFS feed).
+    description: Distance to the nearest ION light-rail stop, in metres.
+
+  - name: neighbourhood
+    type: str
+    how: Postal prefix (the first three characters of the postal code, e.g. N2L) in v1.
+    description: Neighbourhood label for the lookup baseline and the error breakdowns.
+
+  - name: days_on_market
+    type: int
+    how: last_seen minus posted_at, scraped listings only.
+    description: Days the listing has been up. Null for form and pasted-text input.

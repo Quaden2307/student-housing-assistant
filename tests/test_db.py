@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from housing.db import connect
-from housing.db.migrate import SCHEMA_VERSION, TABLES, main, migrate
+from housing.db.migrate import AUX_TABLES, SCHEMA_VERSION, TABLES, main, migrate
 
 # Column names and declared types, copied from HANDOFF.md section 5. If this
 # fails, either schema.sql drifted from the contract or the contract changed
@@ -103,8 +103,19 @@ def insert_listing(conn, source_id="123"):
     return cursor.lastrowid
 
 
-def test_creates_exactly_the_contract_tables(conn):
-    assert table_names(conn) == sorted(TABLES)
+def test_creates_exactly_the_contract_and_auxiliary_tables(conn):
+    assert table_names(conn) == sorted((*TABLES, *AUX_TABLES))
+    assert AUX_TABLES == ("listing_attributes",)
+
+
+def test_listing_attributes_columns(conn):
+    info = conn.execute("PRAGMA table_info(listing_attributes)").fetchall()
+    assert [(row["name"], row["type"]) for row in info] == [
+        ("listing_id", "INTEGER"),
+        ("name", "TEXT"),
+        ("value", "TEXT"),
+    ]
+    assert primary_key(conn, "listing_attributes") == ["listing_id", "name"]
 
 
 @pytest.mark.parametrize("table", TABLES)
@@ -124,8 +135,8 @@ def test_primary_keys(conn):
 def test_migrate_is_idempotent_and_records_version(conn):
     insert_listing(conn)
     assert migrate(conn) == SCHEMA_VERSION
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert table_names(conn) == sorted(TABLES)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+    assert table_names(conn) == sorted((*TABLES, *AUX_TABLES))
     assert conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 1
 
 

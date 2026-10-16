@@ -60,3 +60,19 @@ CREATE TABLE IF NOT EXISTS predictions (
   scored_at TEXT,
   PRIMARY KEY (listing_id, model_version)
 );
+
+-- ---------------------------------------------------------------------------
+-- Auxiliary tables. Not part of the HANDOFF section 5 contract; added by
+-- decisions logged in docs/decisions.md. They hang off listings.id and can be
+-- rebuilt from the raw pages at any time.
+-- ---------------------------------------------------------------------------
+
+-- Every raw attribute a source exposes for a listing, plus our own flags
+-- (poster_hash, per_room_price, ...), so features can be added later without
+-- widening `units`. One row per (listing, name); multi-valued joined with '|'.
+CREATE TABLE IF NOT EXISTS listing_attributes (
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  name TEXT NOT NULL,
+  value TEXT,
+  PRIMARY KEY (listing_id, name)
+);

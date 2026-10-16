@@ -29,12 +29,19 @@ URLs (location id `l1700212`, categories c37 long-term rentals and c36 room rent
 |---|---|---|---|
 | 2026-09-29 | 1,522 | 309 | HANDOFF section 4 |
 | 2026-10-14 | 1,612 | 260 | `pagination.totalCount` in the index JSON; "Results 1 - 40 of 1,612" on the page |
+| 2026-10-14 (first sweep, evening) | 1,620 | 260 | `uv run python -m housing.scrape.kijiji`; 45 requests, 1 min 54 s |
+| 2026-10-16 | 1,636 | 261 | daily run, 350 requests including 300 detail pages |
 
 Sweep log (fill in from the first sweep on): date, category, pages fetched, listings seen, new, gone.
 
 | Date | Category | Pages | Seen | New | Gone |
 |---|---|---|---|---|---|
-| | | | | | |
+| 2026-10-14 | apartments | 41 | 1,594 | 1,594 | first sweep |
+| 2026-10-14 | rooms | 7 | 258 | 258 | first sweep |
+| 2026-10-14 (second run, cached pages) | both | 48 | 1,852 | 0 | 0; 298 detail pages fetched, 2 expired |
+| 2026-10-15 | none | | | | no run: the launchd job was not installed yet |
+| 2026-10-16 | apartments | 41 | 1,636 | 126 | 101 (both categories; last seen Oct 14) |
+| 2026-10-16 | rooms | 7 | 260 | 19 | see above; 300 detail pages fetched, 0 failed; launchd job installed for 06:30 daily |
 
 ### robots.txt (fetched 2026-10-14; `Last-Modified: 13 Oct 2026`, so it changes; re-fetch each run)
 
@@ -166,10 +173,86 @@ Skipped per HANDOFF section 4 (Cloudflare, terms prohibit scraping). Not contact
 Not built yet. The plan from HANDOFF section 4: a form writing rows with `source = 'manual'` so team members
 can enter Facebook-group listings by reading them as humans.
 
-## 7. Wayback Machine
+## 7. Wayback Machine (HANDOFF task 8; queried 2026-10-14)
 
-Pending: capture counts by month for both index URLs (HANDOFF section 10, task 8).
+CDX queries for both index URLs, exact and prefix forms. Note a CDX quirk: `collapse=timestamp:6` on a
+prefix query (`.../kitchener-waterloo/*`) merges adjacent rows per URL, so it gives about one row per URL
+per month, not one per month overall. The exact-URL queries behave as HANDOFF intended.
 
-## 8. ION LRT stops
+| Index | Months with a capture of the exact URL | Status-200 captures of the plain index or a `/page-N/` page | Deepest page archived |
+|---|---|---|---|
+| Apartments c37 | 39 months, 2014 to 2026 | 508 | page 59 (2017); page 1 only from 2024 on |
+| Rooms c36 | 42 months, 2014 to 2026 | 477 | page 73 (2017); page 1 only from 2024 on |
 
-Pending: station coordinates from the GRT GTFS feed, for the `ion_distance_m` feature.
+Captures by year (plain index pages, status 200): apartments 2014: 73, 2015: 115, 2016: 30, 2017: 110,
+2018 to 2023: 23, 2024: 96 (a daily crawl of page 1 from June 10 to September 4, 2024), 2025: 41, 2026: 20.
+Rooms 2014: 139, 2015: 90, 2016: 75, 2017: 105, 2018 to 2023: 20, 2024: 2, 2025: 39, 2026: 8. The 2018
+and 2019 prefix captures are almost all http-to-https redirects with no content. Every calendar month is
+covered in at least two years for apartments and at least four years for rooms, except January and
+December for rooms, which have three or four.
+
+Two layout eras, verified on one capture each:
+
+- 2024 onward (verified on 2024-07-01): the same Next.js page as today, `__NEXT_DATA__` with an Apollo
+  cache, 40 organic plus 6 top listings per capture, each with id, title, price in cents, address with
+  postal code, coordinates, activation date, bedrooms, bathrooms, unit type, furnished, date available
+  and the utility flags. Parser: the same one as the live sweep.
+- 2014 to 2022 (verified on 2022-06-05): server-rendered cards, `div.search-item` with title, price,
+  location, `span.date-posted`, description snippet, nearest intersection and bedrooms; pagination links
+  present. The 2022 capture was served in French ("Pièces: 3 1/2", "2 500,00 $"), so the classic parser
+  needs both locales. 2016 could not be fetched (archive.org returned 429).
+
+Verdict: feasible and well above HANDOFF's "few dozen captures" threshold. Roughly 20,000 to 40,000 thin
+rows before dedup, usable for a monthly price index and a within-era `seasonal_index` feature, never as
+training rows. Caveats: a six-year gap from 2018 to 2023; two parsers; and archive.org rate-limits hard.
+After about ten CDX calls and a few capture fetches it answered 429 "suspected abusive bot traffic" for
+this IP and then allowed about one capture every ten minutes. Pulling the captures needs a fetcher at one
+request per 15 to 20 seconds with long back-off, run over days, with every body saved. The `id_` form of
+the capture URL can return the original gzip-encoded bytes; decode before saving.
+
+Raw: `data/raw/wayback/2026-10-14/` holds the ten CDX responses, a manifest, and the two captures.
+
+## 8. ION LRT stations (for `ion_distance_m`)
+
+From the Grand River Transit GTFS feed (route 301, 32 platform stops collapsed to 19 stations by name,
+coordinates averaged across platforms). The official host `webapps.regionofwaterloo.ca` timed out from
+this network, so the feed came from the Mobility Database mirror of the same feed (schedule period
+spring 2026; station locations do not change between schedule periods). Raw: `data/raw/grt/2026-10-14/`
+(`GRT_GTFS.zip`, provenance in `GRT_GTFS.meta.json`, `ion_stops.csv`). Hardcode this table in
+`src/housing/geo/ion_stops.py` when that module is written.
+
+| # | Station | Latitude | Longitude |
+|---|---|---|---|
+| 1 | Conestoga | 43.498291 | -80.529561 |
+| 2 | Northfield | 43.497205 | -80.543206 |
+| 3 | Research & Technology | 43.481615 | -80.545159 |
+| 4 | University of Waterloo | 43.473387 | -80.541351 |
+| 5 | Laurier-Waterloo Park | 43.468874 | -80.534423 |
+| 6 | Willis Way (southbound) | 43.462158 | -80.523373 |
+| 7 | Waterloo Public Square (northbound) | 43.464151 | -80.523003 |
+| 8 | Allen | 43.459847 | -80.518370 |
+| 9 | Grand River Hospital | 43.457292 | -80.512056 |
+| 10 | Central | 43.453180 | -80.499114 |
+| 11 | Victoria Park (southbound) | 43.450190 | -80.493692 |
+| 12 | Kitchener City Hall (northbound) | 43.451950 | -80.490834 |
+| 13 | Frederick (northbound) | 43.449639 | -80.487361 |
+| 14 | Queen (southbound) | 43.448613 | -80.489361 |
+| 15 | Kitchener Market | 43.446315 | -80.483622 |
+| 16 | Borden | 43.442412 | -80.475368 |
+| 17 | Mill | 43.433656 | -80.477940 |
+| 18 | Block Line | 43.422788 | -80.463009 |
+| 19 | Fairway | 43.422333 | -80.441830 |
+
+## 9. Calendar anchors (official pages, read 2026-10-14)
+
+| | University of Waterloo | Wilfrid Laurier |
+|---|---|---|
+| Fall 2026 reading week | Oct 10 to 18 | Oct 13 to 16 |
+| Fall 2026 classes end | Dec 8 | Dec 9 |
+| Fall 2026 exams | Dec 10 to 23 | Dec 12 to 23 |
+| Winter 2027 classes begin | Jan 11 | Jan 11 |
+| Winter 2027 reading week | Feb 13 to 21 | Feb 16 to 19 |
+| Spring 2027 classes begin | May 10 | |
+
+Sources: `https://uwaterloo.ca/important-dates/undergraduate` and the Laurier academic calendar dates pages
+for Fall 2026 and Winter 2027.

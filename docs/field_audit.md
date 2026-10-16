@@ -3,45 +3,82 @@
 Which HANDOFF section 3 fields a Kijiji listing actually carries, and where. This table decides what the
 unit schema really is: a field that is rarely present or only in free text costs extraction work and rows.
 
-Status: preliminary, 2026-10-14, from 45 apartments cards and 41 rooms cards on page 1 of each index plus
-4 detail pages (2 per category). The full audit per HANDOFF task 6 (20 detail pages, 5 saved as fixtures)
-is still to do; counts below are over the cards, not over 20 detail pages.
+Status: measured 2026-10-16 over every listing in the database (1,720 apartments, 277 rooms;
+detail pages fetched for 277 rooms and 323 apartments) after the extraction rules
+in `housing.parse.units` ran. Counts say how many listings end up with a value in `units`. Regenerate with
+`uv run python scripts/field_audit.py` after a sweep or a rule change.
 
-Where a value lives: `attr` is the structured attributes block in the page JSON, `json` another key in the
-page JSON, `text` the title or description only, `-` absent.
+## Section 3 fields, as extracted
 
-| Field | Apartments (45 cards) | Rooms (41 cards) | Detail page adds | Notes |
-|---|---|---|---|---|
-| price | json `price.amount` 44/45 (cents) | json 39/41 | nothing | CONTACT-type prices have no amount |
-| unit_type | attr `unittype` 45/45 | - | nothing | apartment, house, condo, basement-apartment. Per-room ads appear under apartments: needs a text rule |
-| bedrooms | attr `numberbedrooms` 45/45 | text only | nothing | "0" = studio, "1.5" = 1 + den; rooms need the house total from text |
-| lat, lon | json `location.coordinates` 45/45 | json 41/41 | rounds to 2 decimals when pin hidden | card value is better; postal centroid when no street number |
-| lease_term | attr `agreementtype` 45/45 | text only | nothing | only one-year and month-to-month exist; sublet and 8-month only in text |
-| move_in_month | attr `dateavailable` 17/45 | text only | same attr in `values[0]` | "available now" and month names in text are the fallback |
-| utilities_included | attr `heat`,`hydro`,`water` 45/45 | text only | nothing | internet and cabletv also present |
-| furnished | attr `furnished` 44/45 | attr 32/41 | nothing | |
-| bathrooms | attr `numberbathrooms` 45/45 | text only | display value | canonical value is bathrooms times 10 |
-| laundry_in_unit | attr `laundryinunit` 45/45 | text only | nothing | `laundryinbuilding` also present |
-| building_type | partly from `unittype` | text only | nothing | house vs apartment is structured; purpose-built student vs lowrise is text only (building names) |
-| year_built_after_2018 | - | - | - | only phrases like "new build"; leave null unless stated |
-| address / postal code | json `location.address` 45/45; postal code in it 44/45 | 41/41; postal 34/41 | ld+json `streetAddress` | street number on 40/45 apartments, 11/41 rooms; `nearestIntersection` on all cards |
-| posted date | json `activationDate`, `sortingDate` 45/45 | 41/41 | `endDate` = activation + 60 d | sortingDate is the last bump |
-| description | json, truncated to about 200 chars | same | full plain text | contact info seen in 1 of 4 detail descriptions: strip at parse time |
+| Field | Apartments | Rooms | Where it comes from |
+|---|---|---|---|
+| `unit_type` | 1,720 (100%) | 277 (100%) | attribute `unittype` and bedrooms; the category for rooms; text rules for per-room ads |
+| `bedrooms` | 1,720 (100%) | 112 (40%) | attribute `numberbedrooms`; rooms only from text (the house total is often not stated) |
+| `bathrooms` | 1,720 (100%) | 67 (24%) | attribute `numberbathrooms` (times 10); rooms from text |
+| `lease_term` | 855 (50%) | 87 (31%) | text (sublet, 8-month, month ranges by span) first, then `agreementtype`; `Not Available` is common |
+| `move_in_month` | 777 (45%) | 95 (34%) | attribute `dateavailable`, then text near availability wording; never imputed |
+| `utilities_included` | 1,719 (100%) | 149 (54%) | explicit text first, then attributes `heat`, `hydro`, `water` |
+| `furnished` | 774 (45%) | 208 (75%) | explicit text first, then attribute `furnished` |
+| `laundry_in_unit` | 1,719 (100%) | 58 (21%) | attributes `laundryinunit`, `laundryinbuilding`; rooms from text |
+| `building_type` | 407 (24%) | 163 (59%) | known-building registry, Kijiji's unit type, explicit wording, house words; `unknown` otherwise |
+| `year_built_after_2018` | 18 (1%) | 3 (1%) | registry years and wording about the building's age only |
+
+## Listing-level fields
+
+| Field | Apartments | Rooms |
+|---|---|---|
+| price (latest snapshot) | 1,693 (98%) | 256 (92%) |
+| lat, lon | 1,720 (100%) | 277 (100%) |
+| postal code in address | 1,603 (93%) | 208 (75%) |
+| posted date | 1,720 (100%) | 277 (100%) |
+| full description (detail fetched) | 323 (19%) | 277 (100%) |
+
+## Raw Kijiji attributes present (value given and not `Not Available`)
+
+| Attribute | Apartments | Rooms |
+|---|---|---|
+| `numberbedrooms` | 1,719 (100%) | 0 (0%) |
+| `numberbathrooms` | 1,719 (100%) | 0 (0%) |
+| `unittype` | 837 (49%) | 0 (0%) |
+| `agreementtype` | 854 (50%) | 0 (0%) |
+| `dateavailable` | 759 (44%) | 0 (0%) |
+| `furnished` | 767 (45%) | 178 (64%) |
+| `heat` | 1,719 (100%) | 0 (0%) |
+| `hydro` | 1,719 (100%) | 0 (0%) |
+| `water` | 1,719 (100%) | 0 (0%) |
+| `internet` | 1,719 (100%) | 0 (0%) |
+| `laundryinunit` | 1,719 (100%) | 0 (0%) |
+| `laundryinbuilding` | 1,719 (100%) | 0 (0%) |
+| `areainfeet` | 1,719 (100%) | 0 (0%) |
+| `petsallowed` | 854 (50%) | 155 (56%) |
+| `numberparkingspots` | 840 (49%) | 0 (0%) |
+| `airconditioning` | 854 (50%) | 0 (0%) |
+| `forrentbyhousing` | 1,719 (100%) | 0 (0%) |
+| `smokingpermitted` | 854 (50%) | 0 (0%) |
+
+## Distributions after extraction
+
+- `unit_type`: 2bed 607, 1bed 494, 3plus 335, room 304, house 204, studio 53
+- `lease_term`: unknown 1,055, 12mo 798, month_to_month 88, sublet_4mo 46, 8mo 10
+- `building_type`: unknown 1,427, house 504, purpose_built_student 66
 
 ## What this means
 
-- Apartments: everything except sublet terms, move-in month (17 of 45) and building type comes from the
-  index card. Detail pages are needed for the full description, mostly to catch per-room pricing, sublets
-  and move-in dates.
-- Rooms: only price, location, posted dates and sometimes furnished are structured. Bedrooms, lease term,
-  move-in month, utilities and bathrooms must be extracted from the detail-page description. Every rooms
-  listing needs its detail page fetched once.
+- Apartments are structured: every section 3 field except lease term, move-in month, furnished and
+  building type is filled for essentially all listings from the index card alone. Lease term and move-in
+  are given for about half; the rest say `Not Available`.
+- Rooms are text: only price, location, posted dates and sometimes furnished are structured. After the
+  detail page is fetched the text rules fill bedrooms for less than half, because the house's bedroom
+  count is simply not stated in most room ads. For `unit_type = room` the model should treat `bedrooms`
+  as optional (open question for Caden: section 3 lists it as required).
+- `building_type` is `unknown` for most apartments because nothing structured separates a low-rise from a
+  tower; the known-building registry catches the purpose-built student towers.
+- Prices need the cleaning rules in `docs/pipeline.md` section 4: a handful of ads carry placeholder
+  prices of $1 or per-term totals.
 
-## Method for the full audit (task 6)
+## Remaining audit work
 
-1. Pick 20 detail pages: 10 from each category, spread across professional and owner posters, houses and
-   apartments, sublets and leases. List the ad ids here.
-2. For every field above, count in how many of the 20 it is present and where it lives.
-3. Save 5 of the pages (plus one index page per category) under `tests/fixtures/` for the parser tests.
-
-Ad ids used: to fill.
+- The daily job fetches 300 more detail pages each run, newest first, so within a week every active
+  listing has its full text; rerun this script then.
+- Save three more detail pages as fixtures (a professional landlord's apartment, a sublet, a per-room ad
+  under apartments) with `scripts/make_fixture.py`; two are in `tests/fixtures/` already.
