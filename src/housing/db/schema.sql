@@ -76,3 +76,59 @@ CREATE TABLE IF NOT EXISTS listing_attributes (
   value TEXT,
   PRIMARY KEY (listing_id, name)
 );
+
+-- Wayback Machine backfill (lane 2; HANDOFF section 4 names "a separate archive_listings
+-- table"). Outside the section 5 contract, added at schema version 3 and pending Caden's
+-- sign-off. Archived index pages feed a historical price index; they are never training
+-- rows. Prices are stored as listed (nominal dollars) with their dates; any adjustment for
+-- inflation or market drift happens at analysis time, never in these tables.
+
+-- One row per archived index page: the backfill's work queue and its provenance.
+CREATE TABLE IF NOT EXISTS archive_captures (
+  id INTEGER PRIMARY KEY,
+  timestamp TEXT NOT NULL,         -- Wayback's 14-digit capture time, UTC
+  original TEXT NOT NULL,          -- the archived Kijiji URL
+  category TEXT NOT NULL,          -- 'apartments' or 'rooms'
+  page INTEGER NOT NULL,
+  captured_at TEXT NOT NULL,       -- the same time as ISO 8601 UTC
+  status TEXT NOT NULL,            -- 'pending', 'parsed', 'unsupported', 'failed'
+  format TEXT,                     -- 'nextjs', 'nextjs_v2', 'html_cards', 'unknown'
+  cards INTEGER,
+  total_count INTEGER,             -- Kijiji's own listing count for the category then
+  raw_path TEXT,
+  fetched_at TEXT,
+  error TEXT,
+  UNIQUE(timestamp, original)
+);
+
+-- One row per ad per capture it appears in: the archive's equivalent of snapshots.
+CREATE TABLE IF NOT EXISTS archive_sightings (
+  capture_id INTEGER NOT NULL REFERENCES archive_captures(id),
+  source_id TEXT NOT NULL,         -- Kijiji ad id
+  price REAL,                      -- dollars per month as listed; null for "Please Contact"
+  ad_source TEXT,                  -- 'ORGANIC' or 'TOP_AD'
+  sorting_date TEXT,               -- last bump, ISO UTC
+  PRIMARY KEY (capture_id, source_id)
+);
+
+-- One row per Kijiji ad seen in any capture. Counts and indexes use these rows, never
+-- sightings, so an ad that sat unrented for weeks still counts once.
+CREATE TABLE IF NOT EXISTS archive_listings (
+  source_id TEXT PRIMARY KEY,
+  category TEXT,
+  url TEXT,
+  title TEXT,                      -- contact details stripped
+  address_text TEXT,
+  lat REAL, lon REAL,              -- null for 2024-era captures, which carry no coordinates
+  posted_at TEXT,                  -- Kijiji activationDate (first posting), YYYY-MM-DD
+  first_seen TEXT NOT NULL,        -- earliest capture showing the ad
+  last_seen TEXT NOT NULL,         -- latest capture showing the ad
+  sightings INTEGER NOT NULL DEFAULT 0,
+  first_price REAL,                -- price at first_seen
+  last_price REAL,                 -- price at last_seen
+  min_price REAL,
+  max_price REAL,
+  poster_hash TEXT,                -- salted hash, as in listing_attributes
+  attributes TEXT,                 -- JSON: Kijiji canonical attribute name -> list of values
+  in_live INTEGER NOT NULL DEFAULT 0  -- 1 if the daily sweep has the same ad id
+);
