@@ -22,7 +22,7 @@ between Dec 24 and Jan 10.
 |---|---|---|---|---|
 | 0 | Oct 14 to 18 | Index sweep, details, extraction, features, daily job | First sweep in the DB (done Oct 14, 1,852 listings); pipeline reviewed and launchd job installed (done Oct 16); Discord webhook still to set in `.env` | Caden |
 | 1 | Oct 19 to Nov 1 | Sweep unattended; detail backlog cleared; full field audit (20 pages); parser fixtures; `sample.csv`; Wayback backfill started; manual form live | Daily Discord report for a week without a hand run; about 2,500 raw listings; `docs/field_audit.md` complete | Caden (lane 1), Mark (lane 2), anyone (form) |
-| 2 | Nov 2 to 15 | Dedup, cleaning rules, clean training view; EDA notebook; lookup and ridge baselines; evaluation harness (grouped and time splits, MAE and MAPE) | Clean table with its row count; baseline MAE recorded | analysis pair, Caden |
+| 2 | Nov 2 to 15 | Dedup, cleaning rules, clean training view; EDA notebook; lookup and ridge baselines; evaluation harness (grouped and time splits, MAE and MAPE) | Done early, Oct 24: clean table 1,862 rows; lookup MAE $158, ridge $144 on grouped 5-fold CV | analysis pair, Caden |
 | 3 | Nov 16 to 29 | LightGBM, error analysis, residual percentiles, SHAP drivers, batch scoring into `predictions`, comparables, confidence and out-of-distribution flag | Beats the baseline on held-out listings | analysis pair |
 | 4 | Nov 30 to Dec 9 | Calibration, quantile range, Streamlit check and methodology pages, deployment target decided | Live URL with a real listing scored | app pair |
 | 5 | Dec 10 to Jan 10 | Exams; then report, polish, optional description-embedding experiment | Report with the calibration result; showcase | all |

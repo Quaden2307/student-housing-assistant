@@ -34,6 +34,10 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(resolved)
     # SQLite ignores REFERENCES clauses unless this is turned on, per connection.
     conn.execute("PRAGMA foreign_keys = ON")
+    # Two writers can overlap (the daily sweep and the Wayback backfill share the file).
+    # The features rebuild holds the write lock for a few seconds, which overflowed the
+    # 5-second default on 2026-10-23; wait up to a minute instead of crashing.
+    conn.execute("PRAGMA busy_timeout = 60000")
     # WAL lets a notebook read while the scraper writes without "database is locked".
     conn.execute("PRAGMA journal_mode = WAL")
     conn.row_factory = sqlite3.Row

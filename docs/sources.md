@@ -212,6 +212,32 @@ the capture URL can return the original gzip-encoded bytes; decode before saving
 
 Raw: `data/raw/wayback/2026-10-14/` holds the ten CDX responses, a manifest, and the two captures.
 
+### Backfill results (updated 2026-10-24; first run 2026-10-23)
+
+Second run, after the classic-era parsers landed: `--inventory --since 2014` queued 359 more
+captures and `--download 359` fetched them all in one two-hour run, again with no 429 (358
+parsed: 195 `classic`, 163 `classic_v0`; 1 unknown). The archive now spans 2014 to 2026:
+**9,316 unique past ads from 13,536 sightings** across 464 captures; 1,489 ads seen in 2+
+captures, 398 with a price change. Rooms coverage is strong exactly where the live sweep is
+thin: 938 to 1,298 room ads per year across 2014 to 2017. Median first asking price by year
+(nominal dollars): rooms $470 (2014), $482 (2016), $500 (2018), $700 (2022), $800 (2024),
+$758 (2026); apartments $925 (2014), $1,112 (2017), $1,904 (2022), $2,150 (2024), $1,799
+(2026). The 2018 to 2023 gap years hold only 37 to 80 ads each from stray captures; treat
+those cells as indicative. The old `### Backfill results (2026-10-23)` snapshot below this
+line described the 2024-only first run.
+
+### First run (2026-10-23)
+
+The merged backfill (`uv run python -m housing.scrape.backfill`) queued 105 supported captures
+(2024 on; the 2014 to 2017 era needs a classic-HTML parser that does not exist yet) and
+downloaded all of them in one 31-minute run at one request per 15 to 20 seconds, with no 429:
+101 parsed (14 current-layout, 87 `ListingV2`-era), 4 unsupported. Result: 4,556 sightings of
+2,449 unique past ads in `archive_listings`; 463 ads seen in 2+ captures, 181 with a price
+change, 54 also in the live sweep. 2024-era rows carry no coordinates. Median first asking
+price by year first seen, apartments: $2,150 (2024), $2,012 (2025), $1,799 (2026); rooms:
+$800, $775, $758. Asking prices fell about 16 percent for apartments over two years, our own
+confirmation of the tracker reports in `docs/market.md`.
+
 ## 8. ION LRT stations (for `ion_distance_m`)
 
 From the Grand River Transit GTFS feed (route 301, 32 platform stops collapsed to 19 stations by name,

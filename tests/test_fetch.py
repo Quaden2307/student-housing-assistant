@@ -281,3 +281,38 @@ def test_scrub_stored_pages_rewrites_files_in_place(tmp_path):
     assert scrub_stored_pages(tmp_path, lambda t: t.replace("hello", "x")) == 1
     assert gzip.decompress(page.read_bytes()) == b"<html>x</html>"
     assert json.loads((page.parent / "detail_1.meta.json").read_text())["scrubbed"] is True
+
+
+def test_wait_for_network_returns_when_dns_resolves(monkeypatch):
+    from housing.scrape.fetch import wait_for_network
+
+    calls = []
+
+    def fake_getaddrinfo(host, port):
+        calls.append(host)
+        if len(calls) < 3:
+            raise OSError("no dns yet")
+        return [("ok",)]
+
+    monkeypatch.setattr("housing.scrape.fetch.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("housing.scrape.fetch.time.sleep", lambda s: None)
+    assert wait_for_network("example.test", timeout=60, interval=1) is True
+    assert calls == ["example.test"] * 3
+
+
+def test_wait_for_network_gives_up_after_the_timeout(monkeypatch):
+    from housing.scrape.fetch import wait_for_network
+
+    def fake_getaddrinfo(host, port):
+        raise OSError("still down")
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("housing.scrape.fetch.socket.getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr("housing.scrape.fetch.time.monotonic", lambda: clock["t"])
+
+    def advance(seconds):
+        clock["t"] += seconds
+
+    monkeypatch.setattr("housing.scrape.fetch.time.sleep", advance)
+    assert wait_for_network("example.test", timeout=60, interval=20) is False
+    assert clock["t"] >= 60

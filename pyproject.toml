@@ -8,13 +8,21 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pandas>=2.2",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "requests>=2.32",
+    "scikit-learn>=1.5",
 ]
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.29",
+    "matplotlib>=3.9",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
     "pytest>=8",
     "ruff>=0.6",
 ]

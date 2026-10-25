@@ -227,7 +227,8 @@ def _process(
 ) -> str:
     """Parse one capture's text and record it. Returns the capture's new status."""
     try:
-        fmt, total, cards = parse_capture(text)
+        # Classic-era pages state posting dates relative to the capture moment.
+        fmt, total, cards = parse_capture(text, row["captured_at"])
     except UnsupportedFormat as exc:
         _set_status(
             conn, row["id"], "unsupported", fmt=exc.format, raw_path=raw_path, fetched_at=fetched_at

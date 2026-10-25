@@ -191,3 +191,9 @@ def test_cli_creates_database_and_lists_tables(tmp_path, capsys):
     assert str(path) in out
     for table in TABLES:
         assert table in out
+
+
+def test_connect_waits_a_minute_for_a_locked_database(tmp_path):
+    connection = connect(tmp_path / "t.db")
+    assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 60000
+    connection.close()

@@ -377,3 +377,17 @@ def test_stale_text_flags_are_cleared_on_re_extraction(conn):
     conn.commit()
     extract_all(conn, only_missing=False)
     assert "text_is_takeover" not in attributes_of(conn, lid)
+
+
+def test_daily_main_without_network_alerts_and_exits_4(tmp_path, monkeypatch):
+    import housing.scrape.daily as daily
+
+    monkeypatch.setattr("housing.scrape.daily.wait_for_network", lambda *a, **k: False)
+    posted = []
+    monkeypatch.setattr("housing.scrape.daily.discord", posted.append)
+    fetchers = []
+    monkeypatch.setattr("housing.scrape.daily.Fetcher", lambda source: fetchers.append(source))
+    assert daily.main(["--db", str(tmp_path / "t.db")]) == 4
+    assert posted and posted[0].startswith("ALERT") and "no network" in posted[0]
+    assert fetchers == []  # nothing was fetched and the database was never opened
+    assert not (tmp_path / "t.db").exists()

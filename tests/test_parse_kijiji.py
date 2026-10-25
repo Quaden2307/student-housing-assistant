@@ -167,7 +167,11 @@ def test_detail_room_has_no_attributes_but_full_text(room):
     assert room.image_count == 10 and room.views == 42
 
 
-@pytest.mark.parametrize("name", sorted(p.name for p in FIXTURES.glob("*.html.gz")))
+# Wayback fixtures are not Next.js pages; their hygiene test lives in test_parse_archive.py.
+@pytest.mark.parametrize(
+    "name",
+    sorted(p.name for p in FIXTURES.glob("*.html.gz") if not p.name.startswith("wayback_")),
+)
 def test_fixture_carries_no_personal_data(name):
     page_props = next_data(load(name))["props"]["pageProps"]
     assert page_props.get("userAgent") == "[removed]" and page_props.get("machId") == "[removed]"

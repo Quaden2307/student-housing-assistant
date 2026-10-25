@@ -20,6 +20,7 @@ import json
 import logging
 import random
 import re
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,6 +45,28 @@ HEADERS = {
 }
 # Page titles of the interstitials Cloudflare, Fastly and Vercel serve to suspected bots.
 CHALLENGE_MARKERS = ("<title>Just a moment...", "<title>Client Challenge", "Security Checkpoint")
+
+
+def wait_for_network(
+    host: str = "www.kijiji.ca", *, timeout: float = 600.0, interval: float = 20.0
+) -> bool:
+    """Wait until ``host`` resolves in DNS; False if it never does within ``timeout`` seconds.
+
+    launchd fires the daily job the moment the Mac wakes, often seconds before Wi-Fi and DNS
+    are back; the 06:30 runs of Oct 20, 22 and 23 all died on name resolution. Waiting here
+    turns those mornings into a slightly late sweep instead of a lost day.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            socket.getaddrinfo(host, 443)
+            return True
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            log.warning("%s does not resolve yet; waiting (%.0f s left)", host, remaining)
+            time.sleep(min(interval, remaining))
 
 
 def utc_now_iso() -> str:

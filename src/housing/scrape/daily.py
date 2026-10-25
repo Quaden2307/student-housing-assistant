@@ -23,7 +23,13 @@ from housing.features.build import build_features
 from housing.notify import discord
 from housing.parse.extract import extract_all
 from housing.parse.kijiji import CATEGORIES, ParseError
-from housing.scrape.fetch import BlockedError, Fetcher, FetchError, utc_now_iso
+from housing.scrape.fetch import (
+    BlockedError,
+    Fetcher,
+    FetchError,
+    utc_now_iso,
+    wait_for_network,
+)
 from housing.scrape.kijiji import SOURCE, DetailStats, SweepStats, fetch_details, sweep
 
 log = logging.getLogger(__name__)
@@ -149,6 +155,16 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    if not wait_for_network():
+        # Nothing was fetched, so nothing in the database changed: report and bow out.
+        message = (
+            f"ALERT Housing sweep {utc_now_iso()[:10]}: no network"
+            " (www.kijiji.ca did not resolve within 10 minutes); nothing fetched"
+        )
+        print(message)
+        if not args.no_notify:
+            discord(message)
+        return 4
     conn = connect(args.db)
     try:
         migrate(conn)

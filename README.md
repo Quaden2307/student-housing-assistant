@@ -10,10 +10,11 @@ Decisions are logged in `docs/decisions.md`.
 
 ## Status
 
-Oct 16, 2026: the collection pipeline is built, reviewed and scheduled: Kijiji index sweep, detail
-pages, unit-field extraction, derived features, a daily 06:30 run on Caden's Mac with a Discord
-report. The database holds about 2,000 listings. See `docs/pipeline.md` for how it works and
-`docs/plan.md` for what comes next.
+Oct 24, 2026: the daily collection pipeline runs at 06:30 (2,400 listings and counting), the
+Wayback backfill has recovered 2,449 past ads from 2024 to 2026, and the Phase 1c checkpoint is
+in: a 1,862-row clean training table with recorded baselines (median lookup MAE $158, ridge
+$144 on grouped cross-validation). See `docs/pipeline.md` for how data flows and `docs/plan.md`
+for what comes next.
 
 ## Setup
 
