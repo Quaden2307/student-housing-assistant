@@ -6,6 +6,7 @@
   The repo must live outside ~/Desktop, ~/Documents, ~/Downloads and iCloud Drive:
   macOS protects those (TCC) and launchd fails with EX_CONFIG (78) before Python starts.
   If the Mac is asleep at the scheduled time, launchd runs the job when it wakes.
+  The run keeps the Mac awake itself (caffeinate -i, started from the Python entry points); a closed lid still sleeps the machine.
 -->
 <plist version="1.0">
 <dict>

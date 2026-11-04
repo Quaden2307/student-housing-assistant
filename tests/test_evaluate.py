@@ -167,7 +167,9 @@ def test_time_split_takes_the_closest_distinct_cut():
 
 
 def test_time_split_all_rows_tied_raises():
-    df = make_df(groups=["a", "b", "c"], targets=[600, 700, 800], first_seen=["2026-10-14T06:30:00Z"] * 3)
+    df = make_df(
+        groups=["a", "b", "c"], targets=[600, 700, 800], first_seen=["2026-10-14T06:30:00Z"] * 3
+    )
     with pytest.raises(ValueError, match="distinct first_seen"):
         time_split(df)
 

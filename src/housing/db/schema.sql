@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS archive_captures (
   page INTEGER NOT NULL,
   captured_at TEXT NOT NULL,       -- the same time as ISO 8601 UTC
   status TEXT NOT NULL,            -- 'pending', 'parsed', 'unsupported', 'failed'
-  format TEXT,                     -- 'nextjs', 'nextjs_v2', 'html_cards', 'unknown'
+  format TEXT,                     -- 'nextjs', 'nextjs_v2', 'classic', 'classic_v0', 'html_cards', 'unknown'
   cards INTEGER,
   total_count INTEGER,             -- Kijiji's own listing count for the category then
   raw_path TEXT,
@@ -130,5 +130,7 @@ CREATE TABLE IF NOT EXISTS archive_listings (
   max_price REAL,
   poster_hash TEXT,                -- salted hash, as in listing_attributes
   attributes TEXT,                 -- JSON: Kijiji canonical attribute name -> list of values
-  in_live INTEGER NOT NULL DEFAULT 0  -- 1 if the daily sweep has the same ad id
+  in_live INTEGER NOT NULL DEFAULT 0, -- 1 if the daily sweep has the same ad id
+  neighbourhood TEXT,              -- postal prefix (FSA) found in address_text
+  intersection TEXT                -- nearest intersection, when the card shows one
 );

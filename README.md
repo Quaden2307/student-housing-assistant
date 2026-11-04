@@ -10,11 +10,14 @@ Decisions are logged in `docs/decisions.md`.
 
 ## Status
 
-Oct 24, 2026: the daily collection pipeline runs at 06:30 (2,400 listings and counting), the
-Wayback backfill has recovered 2,449 past ads from 2024 to 2026, and the Phase 1c checkpoint is
-in: a 1,862-row clean training table with recorded baselines (median lookup MAE $158, ridge
-$144 on grouped cross-validation). See `docs/pipeline.md` for how data flows and `docs/plan.md`
-for what comes next.
+Nov 3, 2026: the daily 06:30 pipeline now rides out laptop sleep and network flaps (in-process
+caffeinate, sleep-aware retries, one bounded retry pass per category) and assigns dedup keys
+itself. The database holds 2,900+ live listings and 9,316 archived past ads spanning 2014 to
+2026, now tagged with postal prefixes for a neighbourhood-level price index. Phase 1c is done:
+a ~2,000-row clean training table with recorded baselines (median lookup MAE $158, ridge $143
+on grouped cross-validation). `docs/architecture.md` is the system map; `docs/pipeline.md` has
+the write rules; `docs/plan.md` has what comes next; `docs/sources.md` has every source's
+status and the Wayback results.
 
 ## Setup
 
@@ -29,6 +32,9 @@ uv run python scripts/sweep.py           # the daily run: sweep, details, extrac
 uv run python -m housing.scrape.kijiji   # index sweep only (about 48 requests)
 uv run python -m housing.parse.extract --all   # re-run the unit-field rules
 uv run python -m housing.features.build        # rebuild derived features
+uv run python -m housing.features.dedup        # assign dedup keys (the daily run does this too)
+uv run python -m housing.scrape.backfill --summary   # state of the Wayback archive
+uv run python -m housing.model.baseline        # clean-table size and baseline errors
 sh scripts/install_launchd.sh            # schedule the daily run at 06:30 on this Mac
 uv run pytest                            # tests
 uv run ruff check . && uv run ruff format --check .

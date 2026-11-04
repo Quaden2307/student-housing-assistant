@@ -6,7 +6,8 @@ One run fetches every index page of each category (40 listings a page, about 48 
 both categories), upserts each listing into ``listings`` and adds one ``snapshots`` row per
 listing seen, holding the price on the card and the path of the raw page it came from.
 Index pages are always fetched fresh, so a snapshot is a real sighting. Detail pages are a
-separate step. Exit code 2 means the site blocked us: stop for 24 hours.
+separate step. Exit codes: 2 the site blocked us (stop for 24 hours); 3 a sweep was
+incomplete or a page did not parse; 4 a sweep ended on a network-level fetch failure.
 """
 
 from __future__ import annotations
@@ -40,7 +41,16 @@ from housing.parse.kijiji import (
 )
 from housing.parse.pii import hash_id, redact_url, scrub_page, strip_contact_info
 from housing.paths import REPO_ROOT
-from housing.scrape.fetch import BlockedError, Fetcher, FetchError, utc_now_iso
+from housing.scrape.fetch import (
+    NETWORK_WAIT_SECONDS,
+    BlockedError,
+    Fetcher,
+    FetchError,
+    RobotsDisallowed,
+    keep_awake,
+    utc_now_iso,
+    wait_for_network,
+)
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +77,9 @@ class SweepStats:
     total_count: int = 0
     stopped_early: str | None = None
     """Why the sweep is not a complete picture of the category; None when it is."""
+    fetch_failed: bool = False
+    """True when stopped_early was a network-level fetch failure: the one transient
+    cause worth a retry."""
 
 
 def sweep(
@@ -83,6 +96,12 @@ def sweep(
     ``COMPLETE_FRACTION`` of the site's total count was seen; otherwise ``stopped_early``
     says why, and the caller must not mark anything gone.
 
+    A network-level fetch failure ends the walk and returns partial stats with
+    ``fetch_failed`` set; pages already recorded stay committed and the caller may retry
+    the category. A deliberate consequence: ``RobotsDisallowed`` surfaces as a fetch
+    failure here, visible in the ALERT, and one retry costs no extra request because
+    robots rules are cached per :class:`Fetcher`.
+
     Args:
         conn: Open database connection; committed after every page.
         fetcher: The rate-limited fetcher for ``kijiji``.
@@ -94,9 +113,19 @@ def sweep(
     stats = SweepStats(category)
     seen_ids: set[str] = set()  # promoted ads repeat across pages; one snapshot per run
     for page in range(1, max_pages + 1):
-        result = fetcher.get(
-            index_url(category, page), f"index_{category}_p{page}", refresh=True, scrub=scrub_page
-        )
+        try:
+            result = fetcher.get(
+                index_url(category, page),
+                f"index_{category}_p{page}",
+                refresh=True,
+                scrub=scrub_page,
+            )
+        except BlockedError:
+            raise
+        except FetchError as exc:
+            stats.stopped_early = f"fetch failure at page {page}: {exc}"
+            stats.fetch_failed = True
+            break
         index = parse_index(result.text)
         if page > 1 and index.offset == 0:
             stats.stopped_early = (
@@ -195,7 +224,9 @@ def fetch_details(
     ``DETAIL_RETRY_DAYS``. A removed ad (Kijiji redirects to the search page) is recorded as
     ``detail_error = removed`` and left to the gone rule. After
     ``MAX_CONSECUTIVE_DETAIL_FAILURES`` failures in a row the pass stops, since the network
-    or the page layout is the problem, not the ad.
+    or the page layout is the problem, not the ad. A :class:`FetchError` with no HTTP
+    status is the network dying mid-pass, not the ad's fault: the listing takes no penalty,
+    the pass waits for DNS to come back, and aborts only when the network never returns.
     """
     scraped_at = scraped_at or utc_now_iso()
     retry_before = (
@@ -203,6 +234,24 @@ def fetch_details(
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     stats = DetailStats()
     consecutive_failures = 0
+    row = None
+
+    def record_failure(exc: Exception) -> bool:
+        """Penalize the listing; True when the pass must stop (3 in a row)."""
+        nonlocal consecutive_failures
+        log.warning("detail %s failed: %s", row["source_id"], exc)
+        replace_attributes(
+            conn, row["id"], {"detail_error": str(exc)[:200], "detail_failed_at": scraped_at}
+        )
+        stats.failed += 1
+        consecutive_failures += 1
+        conn.commit()
+        if consecutive_failures >= MAX_CONSECUTIVE_DETAIL_FAILURES:
+            stats.aborted = f"stopped after {consecutive_failures} failures in a row ({exc})"
+            log.error("details %s", stats.aborted)
+            return True
+        return False
+
     for row in pending_details(conn, SOURCE, limit, retry_failed_before=retry_before):
         name = f"detail_{row['source_id']}"
         try:
@@ -212,6 +261,12 @@ def fetch_details(
                 raise ParseError(f"page is ad {detail.source_id}, expected {row['source_id']}")
         except BlockedError:
             raise
+        except RobotsDisallowed as exc:
+            # A robots policy stop is permanent, not a network flap: penalize like any
+            # HTTP failure so the listing stops being re-walked every pass.
+            if record_failure(exc):
+                break
+            continue
         except AdRemovedError:
             log.info("detail %s: the ad was removed", row["source_id"])
             replace_attributes(
@@ -220,17 +275,19 @@ def fetch_details(
             stats.removed += 1
             conn.commit()
             continue
-        except (FetchError, ParseError) as exc:
-            log.warning("detail %s failed: %s", row["source_id"], exc)
-            replace_attributes(
-                conn, row["id"], {"detail_error": str(exc)[:200], "detail_failed_at": scraped_at}
-            )
-            stats.failed += 1
-            consecutive_failures += 1
-            conn.commit()
-            if consecutive_failures >= MAX_CONSECUTIVE_DETAIL_FAILURES:
-                stats.aborted = f"stopped after {consecutive_failures} failures in a row ({exc})"
+        except FetchError as exc:
+            if exc.status is None:  # the network died mid-pass; not this ad's fault
+                log.warning("detail %s: network failure, no penalty: %s", row["source_id"], exc)
+                if wait_for_network(timeout=NETWORK_WAIT_SECONDS):
+                    continue  # listing stays pending; picked up first next pass
+                stats.aborted = f"network gone during details at {row['source_id']}: {exc}"
                 log.error("details %s", stats.aborted)
+                break
+            if record_failure(exc):
+                break
+            continue
+        except ParseError as exc:
+            if record_failure(exc):
                 break
             continue
         consecutive_failures = 0
@@ -285,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    keep_awake()
 
     conn = connect(args.db)
     migrate(conn)
@@ -309,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if stats.stopped_early:
             line += f"; incomplete: {stats.stopped_early}"
-            exit_code = exit_code or 3
+            exit_code = exit_code or (4 if stats.fetch_failed else 3)
         print(line)
     if args.details and exit_code != 2:
         try:

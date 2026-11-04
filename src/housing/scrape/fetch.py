@@ -5,8 +5,10 @@ Every scraper goes through :class:`Fetcher`:
 - one worker, one request every 2 to 3 seconds, one realistic User-Agent;
 - robots.txt fetched once per host per run and checked with wildcard-aware matching
   (``urllib.robotparser`` ignores ``*`` and waves through URLs Kijiji forbids);
-- retries with back-off on connection errors and 5xx, and a hard stop
-  (:class:`BlockedError`) on 403, 429 or a bot-challenge page, whatever its status code;
+- four attempts per URL with jittered back-off: a connection error first waits for DNS
+  to come back (:func:`wait_for_network`, up to 150 awake-seconds) and gives up early
+  when it never does, a 5xx only backs off, and a hard stop (:class:`BlockedError`)
+  ends everything on 403, 429 or a bot-challenge page, whatever its status code;
 - every response body saved gzipped under ``data/raw/<source>/<date>/<name>.<ext>.gz``
   with a ``.meta.json`` beside it, after an optional scrub of personal data. A repeat call
   the same day returns the saved copy unless ``refresh`` is set: detail pages are served
@@ -18,9 +20,12 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import os
 import random
 import re
 import socket
+import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -46,6 +51,9 @@ HEADERS = {
 # Page titles of the interstitials Cloudflare, Fastly and Vercel serve to suspected bots.
 CHALLENGE_MARKERS = ("<title>Just a moment...", "<title>Client Challenge", "Security Checkpoint")
 
+NETWORK_WAIT_SECONDS = 150.0
+"""Awake seconds to wait for DNS between failed connection attempts (see wait_for_network)."""
+
 
 def wait_for_network(
     host: str = "www.kijiji.ca", *, timeout: float = 600.0, interval: float = 20.0
@@ -67,6 +75,28 @@ def wait_for_network(
                 return False
             log.warning("%s does not resolve yet; waiting (%.0f s left)", host, remaining)
             time.sleep(min(interval, remaining))
+
+
+def keep_awake() -> subprocess.Popen | None:
+    """Keep the Mac from idle-sleeping for exactly as long as this process runs.
+
+    The 06:30 runs kept freezing about a minute in: macOS idles back to sleep and only
+    Power Nap's 7 to 30 second wake windows remain. ``caffeinate -i -w <our pid>`` holds
+    a no-idle-sleep assertion until this process exits, so there is no cleanup to do and
+    a crash cannot leave the Mac insomniac. A closed lid still sleeps the machine.
+    A no-op (returning None) off macOS or when caffeinate cannot start.
+
+    Returns:
+        The caffeinate child process, or None when nothing was started.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        # The child watches our pid and exits with us; we only need to keep the handle.
+        return subprocess.Popen(["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())])  # noqa: S603
+    except OSError as exc:
+        log.warning("could not start caffeinate: %s", exc)
+        return None
 
 
 def utc_now_iso() -> str:
@@ -161,6 +191,8 @@ class Fetcher:
         max_delay: Maximum seconds between requests.
         timeout: Per-request timeout in seconds.
         max_attempts: Attempts per URL before giving up on connection errors and 5xx.
+        network_wait: Awake seconds to wait for DNS to come back between connection-error
+            attempts; when it never does, the remaining attempts are skipped.
         session: A ``requests.Session`` to use; tests inject a fake one.
     """
 
@@ -170,8 +202,9 @@ class Fetcher:
         *,
         min_delay: float = 2.0,
         max_delay: float = 3.0,
-        timeout: float = 20.0,
-        max_attempts: int = 3,
+        timeout: float = 30.0,
+        max_attempts: int = 4,
+        network_wait: float = NETWORK_WAIT_SECONDS,
         session: requests.Session | None = None,
     ) -> None:
         self.source = source
@@ -179,6 +212,7 @@ class Fetcher:
         self.max_delay = max_delay
         self.timeout = timeout
         self.max_attempts = max_attempts
+        self.network_wait = network_wait
         self.session = session or requests.Session()
         self.session.headers.update(HEADERS)
         self.requests_made = 0
@@ -296,10 +330,17 @@ class Fetcher:
 
     def _backoff(self, attempt: int) -> None:
         if attempt < self.max_attempts:
-            time.sleep(5 * attempt)
+            time.sleep(5 * attempt + random.uniform(0, 2))
 
     def _request(self, url: str) -> requests.Response:
+        """GET ``url`` with retries; see the module docstring for the policy.
+
+        ``wait_for_network``'s deadline runs on ``time.monotonic``, which does not advance
+        during macOS sleep, so the budgets here are awake-seconds and deliberately ride
+        across Power Nap windows instead of expiring inside one.
+        """
         last_error: Exception | None = None
+        attempt = 0
         for attempt in range(1, self.max_attempts + 1):
             self._wait()
             self.requests_made += 1
@@ -308,6 +349,16 @@ class Fetcher:
             except requests.RequestException as exc:
                 last_error = exc
                 log.warning("attempt %d/%d failed for %s: %s", attempt, self.max_attempts, url, exc)
+                if attempt >= self.max_attempts:
+                    break
+                host = urlsplit(url).hostname or "www.kijiji.ca"
+                if not wait_for_network(host, timeout=self.network_wait):
+                    log.error(
+                        "network still gone after %.0f s awake; giving up on %s",
+                        self.network_wait,
+                        url,
+                    )
+                    break
                 self._backoff(attempt)
                 continue
             status = response.status_code
@@ -326,7 +377,7 @@ class Fetcher:
             return response
         status = last_error.status if isinstance(last_error, FetchError) else None
         raise FetchError(
-            f"gave up on {url} after {self.max_attempts} attempts: {last_error}", status=status
+            f"gave up on {url} after {attempt} attempt(s): {last_error}", status=status
         )
 
 

@@ -6,7 +6,7 @@ import json
 import pytest
 import requests
 
-from housing.scrape.fetch import BlockedError, Fetcher, RobotsDisallowed, RobotsRules
+from housing.scrape.fetch import BlockedError, Fetcher, FetchError, RobotsDisallowed, RobotsRules
 
 # A cut-down copy of Kijiji's robots.txt rules that matter to us (fetched 2026-10-14).
 KIJIJI_ROBOTS = """
@@ -59,7 +59,11 @@ class FakeResponse:
 
 
 class FakeSession:
-    """Serves canned responses and records every URL requested."""
+    """Serves canned responses and records every URL requested.
+
+    A value may be a list of replies consumed in order, the last one repeating forever;
+    an Exception anywhere (in or out of a list) is raised instead of returned.
+    """
 
     def __init__(self, responses):
         self.responses = responses
@@ -69,6 +73,8 @@ class FakeSession:
     def get(self, url, timeout=None):
         self.calls.append(url)
         reply = self.responses[url]
+        if isinstance(reply, list):
+            reply = reply.pop(0) if len(reply) > 1 else reply[0]
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -78,6 +84,19 @@ class FakeSession:
 def raw_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOUSING_DATA_DIR", str(tmp_path))
     return tmp_path / "raw"
+
+
+@pytest.fixture
+def network_waits(monkeypatch):
+    """Record (host, timeout) of every wait_for_network call and answer "network is back"."""
+    calls = []
+
+    def record(host="www.kijiji.ca", *, timeout=None, interval=20.0):
+        calls.append((host, timeout))
+        return True
+
+    monkeypatch.setattr("housing.scrape.fetch.wait_for_network", record)
+    return calls
 
 
 def make_fetcher(responses):
@@ -144,7 +163,7 @@ def test_missing_robots_means_no_rules(raw_dir):
     assert fetcher.get("https://example.test/page", "page").text == "ok"
 
 
-def test_retries_then_gives_up_on_server_errors(raw_dir, monkeypatch):
+def test_retries_then_gives_up_on_server_errors(raw_dir, monkeypatch, network_waits):
     monkeypatch.setattr("housing.scrape.fetch.time.sleep", lambda s: None)
     fetcher, session = make_fetcher(
         {
@@ -154,10 +173,11 @@ def test_retries_then_gives_up_on_server_errors(raw_dir, monkeypatch):
     )
     with pytest.raises(Exception, match="gave up"):
         fetcher.get("https://example.test/flaky", "flaky")
-    assert session.calls.count("https://example.test/flaky") == 3
+    assert session.calls.count("https://example.test/flaky") == 4
+    assert network_waits == []  # 5xx is an answer, not a dead network
 
 
-def test_connection_errors_are_retried(raw_dir, monkeypatch):
+def test_connection_errors_are_retried(raw_dir, monkeypatch, network_waits):
     monkeypatch.setattr("housing.scrape.fetch.time.sleep", lambda s: None)
     fetcher, session = make_fetcher(
         {
@@ -167,7 +187,40 @@ def test_connection_errors_are_retried(raw_dir, monkeypatch):
     )
     with pytest.raises(Exception, match="gave up"):
         fetcher.get("https://example.test/down", "down")
-    assert session.calls.count("https://example.test/down") == 3
+    assert session.calls.count("https://example.test/down") == 4
+    assert len(network_waits) == 3  # between attempts, never after the last
+
+
+def test_connection_errors_recover_on_a_later_attempt(raw_dir, monkeypatch, network_waits):
+    monkeypatch.setattr("housing.scrape.fetch.time.sleep", lambda s: None)
+    fetcher, session = make_fetcher(
+        {
+            "https://example.test/robots.txt": FakeResponse(200, ""),
+            "https://example.test/flaky": [
+                requests.ConnectionError("no route"),
+                requests.ConnectionError("no route"),
+                FakeResponse(200, "back"),
+            ],
+        }
+    )
+    assert fetcher.get("https://example.test/flaky", "flaky").text == "back"
+    assert session.calls.count("https://example.test/flaky") == 3
+    assert network_waits == [("example.test", 150.0), ("example.test", 150.0)]
+
+
+def test_gives_up_early_when_the_network_stays_gone(raw_dir, monkeypatch):
+    monkeypatch.setattr("housing.scrape.fetch.time.sleep", lambda s: None)
+    monkeypatch.setattr("housing.scrape.fetch.wait_for_network", lambda *a, **k: False)
+    fetcher, session = make_fetcher(
+        {
+            "https://example.test/robots.txt": FakeResponse(200, ""),
+            "https://example.test/down": requests.ConnectionError("refused"),
+        }
+    )
+    with pytest.raises(FetchError, match="gave up") as info:
+        fetcher.get("https://example.test/down", "down")
+    assert info.value.status is None
+    assert session.calls.count("https://example.test/down") == 1
 
 
 def test_429_raises_blocked(raw_dir):
@@ -213,7 +266,7 @@ def test_requests_are_spaced_two_to_three_seconds_with_a_browser_user_agent(raw_
     assert session.headers["User-Agent"].startswith("Mozilla/5.0")
 
 
-def test_no_back_off_sleep_after_the_last_attempt(raw_dir, monkeypatch):
+def test_jittered_back_off_and_no_sleep_after_the_last_attempt(raw_dir, monkeypatch):
     sleeps = []
     monkeypatch.setattr("housing.scrape.fetch.time.sleep", sleeps.append)
     fetcher, _ = make_fetcher(
@@ -224,7 +277,29 @@ def test_no_back_off_sleep_after_the_last_attempt(raw_dir, monkeypatch):
     )
     with pytest.raises(Exception, match="gave up") as info:
         fetcher.get("https://example.test/flaky", "flaky")
-    assert sleeps == [5, 10] and info.value.status == 503
+    assert len(sleeps) == 3 and info.value.status == 503
+    assert 5 <= sleeps[0] <= 7 and 10 <= sleeps[1] <= 12 and 15 <= sleeps[2] <= 17
+
+
+def test_keep_awake_is_a_no_op_off_macos(monkeypatch):
+    from housing.scrape import fetch
+
+    spawned = []
+    monkeypatch.setattr(fetch.sys, "platform", "linux")
+    monkeypatch.setattr(fetch.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    assert fetch.keep_awake() is None
+    assert spawned == []
+
+
+def test_keep_awake_survives_a_missing_caffeinate(monkeypatch):
+    from housing.scrape import fetch
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("caffeinate")
+
+    monkeypatch.setattr(fetch.sys, "platform", "darwin")
+    monkeypatch.setattr(fetch.subprocess, "Popen", missing)
+    assert fetch.keep_awake() is None
 
 
 def test_robots_server_error_stops_the_run(raw_dir, monkeypatch):

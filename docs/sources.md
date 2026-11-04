@@ -229,7 +229,7 @@ line described the 2024-only first run.
 ### First run (2026-10-23)
 
 The merged backfill (`uv run python -m housing.scrape.backfill`) queued 105 supported captures
-(2024 on; the 2014 to 2017 era needs a classic-HTML parser that does not exist yet) and
+(2024 on; the classic-era parsers that later unlocked 2014 to 2017 landed on 2026-10-24, see above) and
 downloaded all of them in one 31-minute run at one request per 15 to 20 seconds, with no 429:
 101 parsed (14 current-layout, 87 `ListingV2`-era), 4 unsupported. Result: 4,556 sightings of
 2,449 unique past ads in `archive_listings`; 463 ads seen in 2+ captures, 181 with a price

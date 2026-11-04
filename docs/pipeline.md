@@ -1,14 +1,15 @@
 # Pipeline: how a listing becomes rows, features and (later) a verdict
 
-Written 2026-10-14, revised 2026-10-16 after the review. Describes what is built and how it writes
-to the database. `HANDOFF.md` remains the contract; `docs/decisions.md` records every call made here.
+Written 2026-10-14, revised 2026-10-16 after the review, revised 2026-11-03 after the resilience
+overhaul. Describes what is built and how it writes to the database. `HANDOFF.md` remains the
+contract; `docs/decisions.md` records every call made here; `docs/architecture.md` is the map.
 
 ## 1. Lanes into the one SQLite database
 
 | Lane | What | Cadence | State |
 |---|---|---|---|
 | 1. Current | Kijiji KW index sweep, both categories, through the embedded page JSON; detail pages for the full text; everything below | Daily, 06:30 via launchd | Built |
-| 2. Historical | Wayback captures of the same index pages (2014 to 2017 and 2024 on) into a separate `archive_listings` table, for a monthly price index. Mark's lane | One-off backfill, paced at one request per 15 to 20 s | Planned; see `docs/sources.md` section 7 |
+| 2. Historical | Wayback captures of the same index pages (2014 to 2026) into a separate `archive_listings` table, for a monthly price index. Mark's lane | Manual runs, paced at one request per 15 to 20 s | Built: 9,316 past ads spanning 2014 to 2026; see `docs/sources.md` section 7 |
 | 3. Manual | A Google Form for Facebook-group listings read by people, written with `source = 'manual'` | Ongoing | Planned |
 | 4. Reference | Campus coordinates, ION stations (hardcoded from GTFS), CMHC and asking-rent anchors for sanity checks | Once | Built where needed |
 
@@ -19,17 +20,22 @@ stops on a site problem without reporting it.
 
 | Step | Module | Reads | Writes | Requests |
 |---|---|---|---|---|
-| Index sweep, apartments then rooms | `scrape.kijiji.sweep` | index pages (40 cards each), always fetched fresh | `listings` upsert, one `snapshots` row per listing, every card attribute into `listing_attributes` | about 48 |
-| Gone rule | `db.queries.mark_gone` | `listings.last_seen` | `status = 'gone'` for active listings last seen over 40 h ago, only when both sweeps were complete: last page reached within the cap, at least 90 percent of the site's count seen, pagination advancing | 0 |
-| Details | `scrape.kijiji.fetch_details` | pending listings (no `detail_fetched_at`), rooms first, newest first; failed ones retried after 3 days | `listings.description` (contact details stripped), address, coordinates and posting date fill gaps, detail attributes, `image_count`, `views`, `end_date`, `detail_status`, `poster_hash`; a removed ad gets `detail_error = removed`; the pass stops after 3 failures in a row | up to 300 |
+| Index sweep, apartments then rooms | `scrape.kijiji.sweep` | index pages (40 cards each), always fetched fresh | `listings` upsert, one `snapshots` row per listing, every card attribute into `listing_attributes`. A network-level fetch failure keeps the category's partial stats (pages already committed stay); after both categories, one retry pass re-sweeps only categories that fetch-failed or saw zero listings (page cap, stuck pagination and under-90-percent are never retried) | about 48, plus about 42 worst case for the retry pass |
+| Gone rule | `db.queries.mark_gone` | `listings.last_seen` | `status = 'gone'` for active listings last seen over 40 h ago (time-based, not sweep-based), only when both sweeps were complete: last page reached within the cap, at least 90 percent of the site's count seen, pagination advancing. After failed days the next complete sweep marks the whole backlog in one burst; failed days defer, never fabricate, gone markings | 0 |
+| Details | `scrape.kijiji.fetch_details` | pending listings (no `detail_fetched_at`), rooms first, newest first; failed ones retried after 3 days | `listings.description` (contact details stripped), address, coordinates and posting date fill gaps, detail attributes, `image_count`, `views`, `end_date`, `detail_status`, `poster_hash`; a removed ad gets `detail_error = removed`; the pass stops after 3 failures in a row. A fetch error with no HTTP status is the network dying, not the ad's fault: no penalty, the pass waits for DNS and aborts only when it never returns | up to 300 |
 | Extraction | `parse.extract.extract_all` | title, description, attributes | `units` (rewritten for every listing), `text_*` flags into `listing_attributes` | 0 |
+| Dedup keys | `features.dedup.assign_dedup_keys` | listings (address, coordinates) joined to units | `listings.dedup_key`, only where it changed (idempotent, self-committing) | 0 |
 | Features | `features.build.build_features` | listings, units, latest snapshot price | `features`, dropped and rebuilt | 0 |
 | Report | `scrape.daily.DailyReport`, `notify.discord` | the counts above | stdout, Discord (`DISCORD_WEBHOOK_URL`) | 1 |
 
 Rate and safety (`scrape.fetch.Fetcher`): one worker, 2 to 3 s between requests, one desktop
 User-Agent, robots.txt re-read each run with wildcard matching (a 5xx on robots.txt stops the
-run), three attempts on connection errors and 5xx, a hard stop on 403, 429 or a challenge page
-whatever its status code (exit code 2: wait 24 hours).
+run), four attempts per URL with a 30 s timeout — a connection error waits up to 150
+awake-seconds for DNS to come back between attempts and gives up early when it never does, and
+back-off is jittered (about 5/10/15 s). A hard stop on 403, 429 or a challenge page
+whatever its status code (exit code 2: wait 24 hours). The run keeps the Mac awake itself
+(`keep_awake`: an in-process `caffeinate -i`, macOS only), and `logs/sweep.err.log` rotates to
+`.1` at 5 MB at the start of each run.
 
 Raw storage: every response is scrubbed (poster name and phone nulled, listing text stripped
 of contact details) and gzipped under `data/raw/kijiji/<YYYY-MM-DD>/` with a `.meta.json`
@@ -39,8 +45,10 @@ interrupted details pass resumes without new requests; index pages are always re
 every snapshot is a real sighting.
 
 Exit codes: 0 ok; 1 the run crashed (traceback in `logs/`); 2 blocked; 3 a page did not parse
-or a sweep was incomplete (nothing marked gone); 4 the network or site failed for good. Every
-outcome is printed and posted to Discord, with an `ALERT` prefix when a human should look.
+or a sweep was incomplete (nothing marked gone); 4 the network or site failed for good — a
+category was still fetch-failed after its one retry, the details pass lost the network, or DNS
+never came back at the start. Precedence is 2 over 4 over 3. Every outcome is printed and
+posted to Discord, with an `ALERT` prefix when a human should look.
 
 ### Running it
 
@@ -57,9 +65,10 @@ sh scripts/install_launchd.sh                       # schedule it daily on this 
 - **Identity.** A listing is `(source, source_id)`. Seen again: `last_seen` moves, status returns
   to `active`, null values never overwrite known ones, `posted_at` keeps its first value
   (Kijiji's `activationDate`, the first posting; bumps are ignored).
-- **Snapshots.** One row per listing per run, price from the index card in dollars, null for
-  "Please Contact", `raw_path` pointing at the index page. Promoted ads that repeat across
-  pages get one row.
+- **Snapshots.** One row per listing per run, enforced by a unique index on
+  `(listing_id, scraped_at)` since schema version 4: a retried category updates the run's row,
+  never duplicates it. Price from the index card in dollars, null for "Please Contact",
+  `raw_path` pointing at the index page. Promoted ads that repeat across pages get one row.
 - **Attributes.** `listing_attributes(listing_id, name, value)`: Kijiji's canonical names as
   they come (`numberbedrooms`, `agreementtype`, `heat`...), multi-valued joined with `|`, plus
   ours: `category`, `price_type`, `ad_source`, `sorting_date`, `neighbourhood_name`,
@@ -148,8 +157,12 @@ comparables show the most recent ad of each unit.
 identifiers replaced. `scripts/scrub_raw.py` scrubs pages saved before the fetcher did it.
 `scripts/restrip.py` re-applies the contact-stripping rules to stored rows.
 `scripts/export_sample.py` writes the committed 100-row `data/sample.csv`.
+`scripts/wayback_count.py` sizes the Wayback history with four CDX queries.
+`scripts/field_audit.py` rewrites `docs/field_audit.md` (field coverage per category).
+`scripts/install_launchd.sh` renders and installs the 06:30 launchd job.
 
 ## 7. What is not built yet
 
-Dedup, the clean training view, the manual form, the Wayback lane, geocoding for sources
-without coordinates, and everything from HANDOFF Phase 2 on.
+The manual form, geocoding for sources without coordinates, and everything from HANDOFF
+Phase 2 on. (Dedup, the clean training view and the Wayback lane have since landed; see
+sections 1 and 5 here and `docs/architecture.md`.)

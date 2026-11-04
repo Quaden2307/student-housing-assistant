@@ -1,71 +1,41 @@
 """The sweep against fake fetchers that serve the saved index pages."""
 
 import re
-from pathlib import Path
 
 import pytest
 
 from housing.db import connect
 from housing.db.migrate import migrate
 from housing.parse.pii import REDACTED
-from housing.scrape.fetch import FetchResult
+from housing.scrape.fetch import BlockedError, FetchError
 from housing.scrape.kijiji import sweep
-from tests.helpers import LISTING_TYPES, edit_next_data, load, with_entity, with_pagination
+from tests.helpers import SHARED_ID, FakeFetcher, PagedFetcher, load, with_entity
 
 ROOMS = "kijiji_index_rooms_2026-10-14.html.gz"
 T1 = "2026-10-14T20:00:00Z"
 T2 = "2026-10-15T20:00:00Z"
 
 
-class FakeFetcher:
-    """Serves one saved page (rooms page 1 by default) for every URL and records each call."""
+class FlakyPagedFetcher(PagedFetcher):
+    """Raises the configured exception when asked for a failing page.
 
-    def __init__(self, text=None):
-        self.text = text if text is not None else load(ROOMS)
-        self.urls = []
-        self.kwargs = []
-
-    def page_for(self, url):
-        return self.text
-
-    def get(self, url, name, **kwargs):
-        self.urls.append(url)
-        self.kwargs.append(kwargs)
-        path = Path("data/raw/kijiji/2026-10-14") / f"{name}.html.gz"
-        return FetchResult(url, 200, self.page_for(url), path, T1, False)
-
-
-SHARED_ID = "1744792340"  # the one card that repeats on every page, like a promoted ad
-
-
-class PagedFetcher(FakeFetcher):
-    """Pagination rewritten to span ``total`` listings; page N gets its own ad ids except one.
-
-    Page 1 keeps the fixture's ids. Later pages suffix the page number to every id but
-    ``SHARED_ID``, which repeats on every page the way a promoted ad does.
+    ``fail_pages`` maps a page number to the exception its fetch raises; with
+    ``fail_once`` each page fails only the first time and serves normally after.
     """
 
-    def __init__(self, total=120, limit=40, text=None):
-        super().__init__(text)
-        self.total = total
-        self.limit = limit
+    def __init__(self, fail_pages, *, fail_once=False, total=120, limit=40, text=None):
+        super().__init__(total=total, limit=limit, text=text)
+        self.fail_pages = dict(fail_pages)
+        self.fail_once = fail_once
+        self.raised = set()
 
-    def page_for(self, url):
+    def get(self, url, name, **kwargs):
         match = re.search(r"/page-(\d+)/", url)
         page = int(match.group(1)) if match else 1
-        html = with_pagination(
-            self.text, offset=(page - 1) * self.limit, limit=self.limit, totalCount=self.total
-        )
-        if page == 1:
-            return html
-
-        def renumber(data):
-            state = data["props"]["pageProps"]["__APOLLO_STATE__"]
-            for key, entity in state.items():
-                if key.split(":")[0] in LISTING_TYPES and str(entity.get("id")) != SHARED_ID:
-                    entity["id"] = f"{entity['id']}{page}"
-
-        return edit_next_data(html, renumber)
+        if page in self.fail_pages and not (self.fail_once and page in self.raised):
+            self.raised.add(page)
+            raise self.fail_pages[page]
+        return super().get(url, name, **kwargs)
 
 
 @pytest.fixture
@@ -133,11 +103,58 @@ def test_sweep_stops_when_pagination_does_not_advance(conn):
     stats = sweep(conn, fetcher, "rooms", max_pages=5, scraped_at=T1)
     assert stats.pages == 1 and "page 2 came back as page 1" in stats.stopped_early
     assert len(fetcher.urls) == 2 and "/page-2/" in fetcher.urls[1]
+    assert stats.fetch_failed is False  # the page answered; nothing transient to retry
 
 
 def test_page_cap_marks_the_sweep_incomplete(conn):
     stats = sweep(conn, PagedFetcher(total=120), "rooms", max_pages=2, scraped_at=T1)
     assert stats.pages == 2 and "page cap 2" in stats.stopped_early
+    assert stats.fetch_failed is False
+
+
+def test_mid_sweep_fetch_failure_returns_partial_stats(conn):
+    fetcher = FlakyPagedFetcher({2: FetchError("gave up on x after 4 attempt(s): refused")})
+    stats = sweep(conn, fetcher, "rooms", max_pages=60, scraped_at=T1)
+    assert (stats.pages, stats.seen) == (1, 41)
+    assert stats.fetch_failed is True and "fetch failure at page 2" in stats.stopped_early
+    assert count(conn, "listings") == 41 and count(conn, "snapshots") == 41
+
+
+def test_page_one_fetch_failure_returns_zero_stats(conn):
+    fetcher = FlakyPagedFetcher({1: FetchError("gave up on x after 1 attempt(s): refused")})
+    stats = sweep(conn, fetcher, "rooms", max_pages=60, scraped_at=T1)
+    assert (stats.pages, stats.seen) == (0, 0) and stats.fetch_failed is True
+    assert count(conn, "listings") == 0 and count(conn, "snapshots") == 0
+
+
+def test_blocked_mid_sweep_still_raises_with_earlier_pages_committed(conn):
+    fetcher = FlakyPagedFetcher({2: BlockedError("HTTP 403 with a block for x", status=403)})
+    with pytest.raises(BlockedError):
+        sweep(conn, fetcher, "rooms", max_pages=60, scraped_at=T1)
+    assert count(conn, "listings") == 41 and count(conn, "snapshots") == 41
+
+
+def test_resweep_with_the_same_scraped_at_does_not_duplicate_snapshots(conn):
+    sweep(conn, PagedFetcher(total=40), "rooms", max_pages=1, scraped_at=T1)
+    stats = sweep(conn, PagedFetcher(total=40), "rooms", max_pages=1, scraped_at=T1)
+    assert (stats.seen, stats.new) == (41, 0)
+    assert count(conn, "listings") == 41 and count(conn, "snapshots") == 41
+
+
+def test_cli_exits_4_on_a_fetch_failed_sweep(tmp_path, monkeypatch, capsys):
+    from housing.scrape import kijiji
+
+    monkeypatch.setenv("HOUSING_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(kijiji, "keep_awake", lambda: None)
+    monkeypatch.setattr(
+        kijiji,
+        "Fetcher",
+        lambda source: FlakyPagedFetcher(
+            {1: FetchError("gave up on x after 4 attempt(s): refused")}
+        ),
+    )
+    assert kijiji.main(["--db", str(tmp_path / "t.db"), "--category", "rooms"]) == 4
+    assert "incomplete: fetch failure at page 1" in capsys.readouterr().out
 
 
 def test_too_few_listings_marks_the_sweep_incomplete(conn):

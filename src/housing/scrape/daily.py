@@ -5,7 +5,8 @@
 
 Exit codes: 0 ok; 1 the run crashed (traceback in the log); 2 blocked by the site (stop for
 24 hours); 3 a page could not be parsed or a sweep was incomplete (nothing marked gone);
-4 the network or the site failed for good. Every outcome is printed and posted to Discord.
+4 the network or the site failed for good (a category failed to fetch even after one retry,
+or the details pass lost the network). Every outcome is printed and posted to Discord.
 """
 
 from __future__ import annotations
@@ -18,15 +19,18 @@ from pathlib import Path
 
 from housing.db import connect
 from housing.db.migrate import migrate
-from housing.db.queries import count_listings, mark_gone
+from housing.db.queries import count_listings, count_pending_details, count_unkeyed, mark_gone
 from housing.features.build import build_features
+from housing.features.dedup import assign_dedup_keys
 from housing.notify import discord
 from housing.parse.extract import extract_all
 from housing.parse.kijiji import CATEGORIES, ParseError
+from housing.paths import REPO_ROOT
 from housing.scrape.fetch import (
     BlockedError,
     Fetcher,
     FetchError,
+    keep_awake,
     utc_now_iso,
     wait_for_network,
 )
@@ -35,7 +39,19 @@ from housing.scrape.kijiji import SOURCE, DetailStats, SweepStats, fetch_details
 log = logging.getLogger(__name__)
 
 GONE_AFTER_HOURS = 40
-"""A listing missed by two consecutive daily sweeps is marked gone (one miss can be a glitch)."""
+"""Hours unseen before an active listing is marked gone, time-based, not sweep-based.
+
+About two daily runs when runs succeed, but after failed days the next complete sweep marks
+the whole backlog at once (155 and 265 gone in one day after the October outages).
+``mark_gone`` only runs after a complete sweep of both categories, so failed days defer,
+never fabricate, gone markings.
+"""
+
+RETRY_NETWORK_WAIT = 300.0
+"""Awake seconds to wait for DNS before the one retry pass over fetch-failed categories."""
+
+ERR_LOG_MAX_BYTES = 5 * 1024 * 1024
+"""Rotate ``logs/sweep.err.log`` to ``.1`` once it passes this size."""
 
 
 @dataclass
@@ -47,7 +63,10 @@ class DailyReport:
     gone: int = 0
     details: DetailStats = field(default_factory=DetailStats)
     units_extracted: int = 0
+    dedup_changed: int = 0
     features_rows: int = 0
+    pending_details: int = 0
+    unkeyed: int = 0
     listings_total: int = 0
     listings_active: int = 0
     requests_made: int = 0
@@ -74,9 +93,11 @@ class DailyReport:
             f"Housing sweep {self.started_at[:10]}: " + ", ".join(parts) + f"; {self.gone} gone;"
             f" details {self.details.fetched} fetched/{self.details.failed} failed"
             f"/{self.details.removed} removed;"
-            f" units {self.units_extracted}; features {self.features_rows};"
+            f" units {self.units_extracted}; dedup {self.dedup_changed} changed;"
+            f" features {self.features_rows};"
             f" DB {self.listings_total} listings ({self.listings_active} active);"
-            f" {self.requests_made} requests"
+            f" {self.requests_made} requests;"
+            f" pending details {self.pending_details}; unkeyed {self.unkeyed}"
         )
         problems = self.problems()
         if problems:
@@ -93,33 +114,67 @@ def run(
     gone_after_hours: int = GONE_AFTER_HOURS,
     now: datetime | None = None,
 ) -> DailyReport:
-    """Run every step in order and return the report; never raises for site or network problems."""
+    """Run every step in order and return the report; never raises for site or network problems.
+
+    A category whose sweep ends on a network failure (or sees nothing at all) is retried
+    once after the whole loop, behind a fresh ``wait_for_network``; page-cap, stuck
+    pagination and under-90-percent sweeps are answered-page anomalies, not transient,
+    and are never retried. Exit grading is 2 (blocked) over 4 (fetch failed) over 3
+    (incomplete), and ``mark_gone`` stays gated on final completeness.
+    """
     now = now or datetime.now(UTC)
     scraped_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     report = DailyReport(started_at=scraped_at)
-    complete = True
+    fetch_failed_outside = False
     for category in CATEGORIES:
         try:
             stats = sweep(conn, fetcher, category, max_pages=max_pages, scraped_at=scraped_at)
         except BlockedError as exc:
             report.errors.append(f"blocked: {exc}")
             report.exit_code = 2
-            complete = False
             break
         except ParseError as exc:
             report.errors.append(f"{category} parse failure: {exc}")
             report.exit_code = 3
-            complete = False
             break
         except FetchError as exc:
+            # Safety net: sweep() swallows fetch failures into partial stats now, so this
+            # normally never fires; still, one dead category must not cost the other.
             report.errors.append(f"{category} fetch failure: {exc}")
-            report.exit_code = 4
-            complete = False
-            break
+            fetch_failed_outside = True
+            continue
         report.sweeps.append(stats)
-        if stats.stopped_early or stats.seen == 0:
-            complete = False
-            report.exit_code = report.exit_code or 3
+    if report.exit_code != 2:
+        for i, failed in enumerate(report.sweeps):
+            if not (failed.fetch_failed or failed.seen == 0):
+                continue  # page cap / stuck pagination / <90% are not transient
+            if not wait_for_network(timeout=RETRY_NETWORK_WAIT):
+                log.error("network still gone; keeping %s partial stats", failed.category)
+                break
+            log.info("retrying %s once: %s", failed.category, failed.stopped_early)
+            try:
+                again = sweep(
+                    conn, fetcher, failed.category, max_pages=max_pages, scraped_at=scraped_at
+                )
+            except BlockedError as exc:
+                report.errors.append(f"blocked during retry: {exc}")
+                report.exit_code = 2
+                break
+            except ParseError as exc:
+                report.errors.append(f"{failed.category} parse failure on retry: {exc}")
+                break
+            # Upsert creations are one-time events, disjoint across the two attempts.
+            again.new += failed.new
+            report.sweeps[i] = again
+    if report.exit_code != 2 and (
+        fetch_failed_outside or any(s.fetch_failed for s in report.sweeps)
+    ):
+        report.exit_code = 4
+    complete = len(report.sweeps) == len(CATEGORIES) and all(
+        s.seen > 0 and not s.stopped_early for s in report.sweeps
+    )
+    if report.exit_code == 0 and not complete:
+        report.exit_code = 3
     if complete:
         cutoff = (now - timedelta(hours=gone_after_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
         report.gone = mark_gone(conn, SOURCE, cutoff)
@@ -135,15 +190,34 @@ def run(
         if report.details.aborted:
             report.exit_code = report.exit_code or 4
     report.units_extracted = extract_all(conn, only_missing=False, extracted_at=utc_now_iso())
+    # Dedup keys need units written, hence after extraction; self-commits and is idempotent.
+    report.dedup_changed = assign_dedup_keys(conn)
     report.features_rows = build_features(conn)
+    report.pending_details = count_pending_details(conn, SOURCE)
+    report.unkeyed = count_unkeyed(conn, SOURCE)
     report.listings_total = count_listings(conn)
     report.listings_active = count_listings(conn, "active")
     report.requests_made = fetcher.requests_made
     return report
 
 
+def rotate_err_log(max_bytes: int = ERR_LOG_MAX_BYTES) -> None:
+    """Rename ``logs/sweep.err.log`` over ``sweep.err.log.1`` once it exceeds ``max_bytes``.
+
+    launchd holds the err-log file descriptor, so a rotation takes effect on the next
+    run, which is fine. Any filesystem trouble is logged and ignored.
+    """
+    err_log = REPO_ROOT / "logs" / "sweep.err.log"
+    try:
+        if err_log.exists() and err_log.stat().st_size > max_bytes:
+            err_log.replace(err_log.with_name(err_log.name + ".1"))
+    except OSError as exc:
+        log.warning("could not rotate %s: %s", err_log, exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Whatever happens, one line is printed and posted."""
+    rotate_err_log()
     parser = argparse.ArgumentParser(
         description="Daily sweep, details, extraction, features, report."
     )
@@ -155,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    keep_awake()
     if not wait_for_network():
         # Nothing was fetched, so nothing in the database changed: report and bow out.
         message = (

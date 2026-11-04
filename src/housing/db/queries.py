@@ -62,12 +62,19 @@ def insert_snapshot(
     price: float | None,
     raw_path: str | None,
 ) -> int:
-    """Record one sighting of a listing and return the snapshot id."""
-    cursor = conn.execute(
-        "INSERT INTO snapshots (listing_id, scraped_at, price, raw_path) VALUES (?, ?, ?, ?)",
+    """Record one sighting of a listing and return the snapshot id.
+
+    One row per listing per run: a re-sighting at the same ``scraped_at`` (a retried
+    category) updates the row instead of duplicating it.
+    """
+    row = conn.execute(
+        "INSERT INTO snapshots (listing_id, scraped_at, price, raw_path) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(listing_id, scraped_at) DO UPDATE SET"
+        " price = excluded.price, raw_path = excluded.raw_path"
+        " RETURNING id",
         (listing_id, scraped_at, price, raw_path),
-    )
-    return int(cursor.lastrowid)
+    ).fetchone()
+    return int(row[0])
 
 
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -166,6 +173,33 @@ def pending_details(
         " LIMIT ?",
         (source, retry_failed_before, limit),
     ).fetchall()
+
+
+def count_pending_details(conn: sqlite3.Connection, source: str) -> int:
+    """Count active listings whose detail page has not been fetched yet.
+
+    Mirrors :func:`pending_details`' join on the ``detail_fetched_at`` attribute, but
+    counts the whole backlog, failed-and-waiting listings included.
+    """
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM listings l"
+            " LEFT JOIN listing_attributes d"
+            " ON d.listing_id = l.id AND d.name = 'detail_fetched_at'"
+            " WHERE l.source = ? AND l.status = 'active' AND l.url IS NOT NULL"
+            " AND d.value IS NULL",
+            (source,),
+        ).fetchone()[0]
+    )
+
+
+def count_unkeyed(conn: sqlite3.Connection, source: str) -> int:
+    """Count a source's listings that still have no ``dedup_key``."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM listings WHERE source = ? AND dedup_key IS NULL", (source,)
+        ).fetchone()[0]
+    )
 
 
 def mark_gone(conn: sqlite3.Connection, source: str, not_seen_since: str) -> int:

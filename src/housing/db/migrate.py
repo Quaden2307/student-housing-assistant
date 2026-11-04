@@ -20,11 +20,12 @@ from pathlib import Path
 from housing.db import connect
 from housing.paths import db_path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """Version written to ``PRAGMA user_version`` after ``schema.sql`` is applied.
 
 History: 1 = the five section 5 tables (2026-10-04); 2 = adds ``listing_attributes`` (2026-10-14);
-3 = adds the Wayback backfill tables ``archive_*`` (2026-10-16).
+3 = adds the Wayback backfill tables ``archive_*`` (2026-10-16); 4 = snapshots unique per
+(listing_id, scraped_at); archive_listings gains neighbourhood and intersection (2026-11-03).
 """
 
 TABLES = ("listings", "snapshots", "units", "features", "predictions")
@@ -42,12 +43,29 @@ def schema_sql() -> str:
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply ``schema.sql`` to ``conn`` and record the schema version.
 
-    Safe to run on every start-up: existing tables and rows are left as they are.
+    Safe to run on every start-up: existing tables and rows are left as they are, except
+    for the guarded version-4 step, which runs once (duplicate snapshots within one run
+    collapse to their first row; ``archive_listings`` gains two columns it may already
+    have from ``schema.sql``). The snapshots unique index lives here, not in the contract
+    DDL (the 2026-10-04 decision on indexes).
 
     Returns:
         The schema version now stored in the database.
     """
+    prior = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.executescript(schema_sql())
+    if prior < 4:
+        conn.execute(
+            "DELETE FROM snapshots WHERE id NOT IN"
+            " (SELECT MIN(id) FROM snapshots GROUP BY listing_id, scraped_at)"
+        )
+        present = {row[1] for row in conn.execute("PRAGMA table_info(archive_listings)")}
+        for column in ("neighbourhood", "intersection"):
+            if column not in present:  # fresh databases get them from schema.sql
+                conn.execute(f"ALTER TABLE archive_listings ADD COLUMN {column} TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_snapshots_run ON snapshots (listing_id, scraped_at)"
+    )
     # PRAGMA statements cannot take bound parameters, hence the f-string.
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()

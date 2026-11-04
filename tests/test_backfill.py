@@ -268,6 +268,37 @@ def test_poster_ids_are_hashed_and_skipped_without_a_salt(conn, tmp_path, monkey
     assert "HOUSING_HASH_SALT not set" in summary(conn)
 
 
+def test_neighbourhood_and_intersection_are_recorded_and_rebuilt(conn, tmp_path):
+    from tests.test_parse_archive import classic_card_html, classic_page
+
+    queue_captures(conn, "20240610080000", "20240611080000")
+    crossing = (
+        '<span class="nearest-intersection"><span class="intersection">King St W</span>'
+        '<span class="intersection">University Ave</span></span>'
+    )
+    classic = classic_page(
+        classic_card_html(
+            10001, title="Room near campus", price="$600", posted="05/06/2017", extra=crossing
+        )
+    )
+    pages = {
+        raw_url("20240610080000"): v2_page([ad(1)]),
+        raw_url("20240611080000"): classic,
+    }
+    download(conn, FakeFetcher(tmp_path, pages), limit=10)
+    one = listing(conn, "1")
+    assert one["neighbourhood"] == "N2L"  # the FSA of "..., Waterloo, ON, N2L 3G1"
+    assert one["intersection"] == "University Ave & Phillip St"
+    other = listing(conn, "10001")
+    assert other["intersection"] == "King St W & University Ave"
+    assert other["neighbourhood"] is None  # "Kitchener / Waterloo" carries no postal code
+
+    # --rebuild recomputes both columns offline from the stored captures.
+    assert rebuild(conn) == 2
+    assert listing(conn, "1")["neighbourhood"] == "N2L"
+    assert listing(conn, "10001")["intersection"] == "King St W & University Ave"
+
+
 def test_rebuild_reproduces_the_tables_from_stored_pages(conn, tmp_path):
     queue_captures(conn, "20240610080000", "20240611080000")
     pages = {

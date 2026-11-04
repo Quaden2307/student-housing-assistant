@@ -49,11 +49,12 @@ from pathlib import Path
 
 from housing.db import connect
 from housing.db.migrate import migrate
+from housing.features.build import neighbourhood_from_address
 from housing.parse.archive import UnsupportedFormat, parse_capture, scrub_capture
 from housing.parse.kijiji import CATEGORIES, IndexCard, ParseError
 from housing.parse.pii import hash_id, strip_contact_info
 from housing.paths import REPO_ROOT
-from housing.scrape.fetch import BlockedError, Fetcher, FetchError
+from housing.scrape.fetch import BlockedError, Fetcher, FetchError, keep_awake
 from housing.scrape.wayback import USER_AGENT, Capture, captures
 
 log = logging.getLogger(__name__)
@@ -291,7 +292,9 @@ def record_cards(
 
     An ad already known keeps its first values; nulls are filled from later captures
     (coordinates, for an ad first seen on a 2024 page), and ``first_seen``/``last_seen``
-    widen to cover this capture.
+    widen to cover this capture. ``neighbourhood`` (the postal prefix in the address) and
+    ``intersection`` (classic and v2 cards carry one) fill gaps the same way the address
+    does.
     """
     salted = bool(os.environ.get("HOUSING_HASH_SALT"))
     for card in cards:
@@ -303,8 +306,9 @@ def record_cards(
         conn.execute(
             """
             INSERT INTO archive_listings (source_id, category, url, title, address_text,
-                lat, lon, posted_at, first_seen, last_seen, poster_hash, attributes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lat, lon, posted_at, first_seen, last_seen, poster_hash, attributes,
+                neighbourhood, intersection)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
                 category = COALESCE(archive_listings.category, excluded.category),
                 url = COALESCE(archive_listings.url, excluded.url),
@@ -316,7 +320,9 @@ def record_cards(
                 first_seen = MIN(archive_listings.first_seen, excluded.first_seen),
                 last_seen = MAX(archive_listings.last_seen, excluded.last_seen),
                 poster_hash = COALESCE(archive_listings.poster_hash, excluded.poster_hash),
-                attributes = COALESCE(archive_listings.attributes, excluded.attributes)
+                attributes = COALESCE(archive_listings.attributes, excluded.attributes),
+                neighbourhood = COALESCE(archive_listings.neighbourhood, excluded.neighbourhood),
+                intersection = COALESCE(archive_listings.intersection, excluded.intersection)
             """,
             (
                 card.source_id,
@@ -331,6 +337,8 @@ def record_cards(
                 seen_at,
                 hash_id(card.poster_id) if salted else None,
                 json.dumps(card.attributes, sort_keys=True) if card.attributes else None,
+                neighbourhood_from_address(card.address_text),
+                card.intersection,
             ),
         )
 
@@ -433,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    keep_awake()  # a paced multi-hour download dies the same way a sweep does when the Mac sleeps
 
     conn = connect(args.db)
     migrate(conn)
