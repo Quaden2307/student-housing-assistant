@@ -39,8 +39,11 @@ EXPECTED_COLUMNS = [
     "is_takeover",
     "internet_included",
     "listing_month",
+    "listing_year",
+    "city",
     "first_seen",
     "last_seen",
+    "is_archive",
 ]
 
 
@@ -266,6 +269,7 @@ def test_contract_constants():
         "lease_term",
         "building_type",
         "neighbourhood",
+        "city",
         "landlord_type",
     ]
     assert NUMERICS == [
@@ -277,6 +281,7 @@ def test_contract_constants():
         "ion_distance_m",
         "move_in_month",
         "listing_month",
+        "listing_year",
     ]
     assert BOOLEANS == [
         "utilities_included",
@@ -293,7 +298,7 @@ def test_columns_and_dtypes_match_contract(conn):
     df, _ = load_training(conn)
     assert list(df.columns) == EXPECTED_COLUMNS
     assert str(df["listing_id"].dtype) == "int64"
-    for col in ("bedrooms", "move_in_month", "listing_month"):
+    for col in ("bedrooms", "move_in_month", "listing_month", "listing_year"):
         assert str(df[col].dtype) == "Int64", col
     for col in (
         "price",
@@ -417,3 +422,95 @@ def test_empty_database(tmp_path):
     assert len(df) == 0
     assert report.kept == 0
     assert "kept 0" in str(report)
+
+
+def test_out_of_region_checks_each_listing_against_its_own_market(conn):
+    # The same Hamilton coordinates: dropped for a listing with no location attribute
+    # (pre-expansion rows default to Kitchener-Waterloo), kept for one swept in Hamilton.
+    _add(conn, 30, lat=43.25, lon=-79.87, attrs={"category": "apartments"})
+    _add(
+        conn,
+        31,
+        lat=43.25,
+        lon=-79.87,
+        attrs={"category": "apartments", "location": "hamilton"},
+    )
+    df, _ = load_training(conn)
+    ids = set(df["listing_id"])
+    assert 31 in ids and 30 not in ids
+    assert df.loc[df["listing_id"] == 31, "city"].iloc[0] == "hamilton"
+    assert not df["is_archive"].any()
+
+
+def _add_archive(
+    conn,
+    source_id,
+    *,
+    category="apartments",
+    title="2 bed apartment",
+    price=1200.0,
+    first_seen="2014-07-11T00:00:00Z",
+    last_seen="2014-08-11T00:00:00Z",
+    attributes='{"numberbedrooms": ["2"]}',
+    in_live=0,
+    neighbourhood=None,
+):
+    conn.execute(
+        "INSERT INTO archive_listings (source_id, category, title, first_seen, last_seen,"
+        " sightings, last_price, attributes, in_live, neighbourhood)"
+        " VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        (
+            source_id,
+            category,
+            title,
+            first_seen,
+            last_seen,
+            price,
+            attributes,
+            in_live,
+            neighbourhood,
+        ),
+    )
+
+
+def test_archive_rows_are_ignored_by_default(tmp_path):
+    conn = connect(tmp_path / "arc0.db")
+    migrate(conn)
+    _add(conn, 1)
+    _add_archive(conn, "900001")
+    df, report = load_training(conn)
+    assert len(df) == 1 and report.archive_in == 0
+
+
+def test_archive_rows_join_training_with_listing_year(tmp_path):
+    conn = connect(tmp_path / "arc.db")
+    migrate(conn)
+    _add(conn, 1)  # one live row, kept
+    _add_archive(conn, "900001", neighbourhood="N2L")
+    _add_archive(conn, "900002", in_live=1)  # the live sweep has this ad: excluded
+    _add_archive(conn, "900003", price=None)  # no price: excluded
+    _add_archive(
+        conn,
+        "900004",
+        category="rooms",
+        title="Room for rent near campus",
+        price=550.0,
+        attributes="{}",
+        first_seen="2017-03-01T00:00:00Z",
+        last_seen="2017-04-01T00:00:00Z",
+    )
+    df, report = load_training(conn, include_archive=True)
+    assert report.archive_in == 2 and "archive rows in: 2" in str(report)
+    arch = df[df["is_archive"]]
+    assert set(arch["dedup_key"]) == {"archive:900001", "archive:900004"}
+    assert (arch["listing_id"] < 0).all()  # never a real listings.id
+    one = arch[arch["dedup_key"] == "archive:900001"].iloc[0]
+    # The stored attribute JSON runs through the live unit extractor: bedrooms 2,
+    # so the $1,200 ask becomes $600 per bedroom, with the era kept as a feature.
+    assert one["bedrooms"] == 2 and one["price_per_bedroom"] == 600.0
+    assert one["listing_year"] == 2014 and one["city"] == "kitchener-waterloo"
+    assert one["neighbourhood"] == "N2L"
+    room = arch[arch["dedup_key"] == "archive:900004"].iloc[0]
+    assert room["unit_type"] == "room" and room["price_per_bedroom"] == 550.0
+    live = df[~df["is_archive"]]
+    assert list(live["listing_id"]) == [1]

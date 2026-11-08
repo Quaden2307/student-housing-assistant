@@ -76,6 +76,12 @@ def _offline(tmp_path, monkeypatch):
     monkeypatch.setattr("housing.scrape.kijiji.keep_awake", lambda: None)
     monkeypatch.setattr("housing.scrape.kijiji.wait_for_network", lambda *a, **k: True)
     monkeypatch.setattr(daily, "REPO_ROOT", tmp_path)
+    # Most of these tests pin single-market behaviour (retry pass, gone rule, exit
+    # grading), so they run the original KW-only plan; the expansion markets have
+    # their own test below, which widens the plan itself.
+    monkeypatch.setattr(
+        daily, "SWEEP_PLAN", [("kitchener-waterloo", c) for c in ("apartments", "rooms")]
+    )
 
 
 @pytest.fixture
@@ -409,7 +415,50 @@ def test_report_alerts_on_zero_seen_or_a_missing_category():
     )
     assert report.message().startswith("ALERT") and "rooms: 0 seen" in report.message()
     one = DailyReport(started_at="2026-10-15T06:30:00Z", sweeps=[SweepStats("apartments", seen=45)])
-    assert one.message().startswith("ALERT") and "1 of 2 categories" in one.message()
+    assert one.message().startswith("ALERT") and "1 of 2 sweeps" in one.message()
+
+
+def test_expansion_markets_are_swept_and_tagged(conn, monkeypatch):
+    monkeypatch.setattr(
+        daily, "SWEEP_PLAN", [("kitchener-waterloo", "rooms"), ("hamilton", "rooms")]
+    )
+
+    class TwoMarketFetcher(FakeFetcher):
+        """Serves the rooms page for both markets, with Hamilton's ad ids retagged."""
+
+        def get(self, url, name, **kwargs):
+            result = super().get(url, name, **kwargs)
+            if "/hamilton/" not in url:
+                return result
+
+            def retag(data):
+                state = data["props"]["pageProps"]["__APOLLO_STATE__"]
+                for key, entity in state.items():
+                    if key.split(":")[0] in LISTING_TYPES:
+                        entity["id"] = f"{entity['id']}7"
+
+            return FetchResult(
+                result.url,
+                200,
+                edit_next_data(result.text, retag),
+                result.path,
+                result.fetched_at,
+                False,
+            )
+
+    report = run(conn, TwoMarketFetcher(), max_details=0, max_pages=1, now=DAY1)
+    assert [s.label for s in report.sweeps] == ["rooms", "hamilton rooms"]
+    assert [s.seen for s in report.sweeps] == [41, 41]
+    assert report.sweeps[1].new == 41  # disjoint ad ids: a real second market
+    assert report.exit_code == 0 and "hamilton rooms 41 seen (41 new)" in report.message()
+    locations = dict(
+        conn.execute(
+            "SELECT l.source_id, a.value FROM listing_attributes a"
+            " JOIN listings l ON l.id = a.listing_id WHERE a.name = 'location'"
+        )
+    )
+    assert locations["1744792340"] == "kitchener-waterloo"
+    assert locations["17447923407"] == "hamilton"
 
 
 def test_contact_info_is_stripped_before_storage(conn):

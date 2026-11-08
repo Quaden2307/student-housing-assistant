@@ -84,7 +84,9 @@ def index_page(original: str) -> tuple[str, int] | None:
     if not match:
         return None
     for name, cat in CATEGORIES.items():
-        if cat.slug == match["slug"] and cat.code == match["code"]:
+        # The archive lane only covers Kitchener-Waterloo, so the KW location id
+        # completes the category prefix here (the regex pins l1700212 the same way).
+        if cat.slug == match["slug"] and f"{cat.prefix}l1700212" == match["code"]:
             return name, int(match["page"] or 1)
     return None
 

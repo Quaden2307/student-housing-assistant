@@ -1,10 +1,12 @@
-"""Sweep the Kijiji Kitchener-Waterloo index pages into the database.
+"""Sweep Kijiji index pages into the database, one market at a time.
 
     uv run python -m housing.scrape.kijiji --category both --max-pages 60
+    uv run python -m housing.scrape.kijiji --location hamilton
 
-One run fetches every index page of each category (40 listings a page, about 48 requests for
-both categories), upserts each listing into ``listings`` and adds one ``snapshots`` row per
-listing seen, holding the price on the card and the path of the raw page it came from.
+One run fetches every index page of each category (40 listings a page), upserts each
+listing into ``listings`` and adds one ``snapshots`` row per listing seen, holding the
+price on the card and the path of the raw page it came from. The market swept is written
+to each listing as the ``location`` attribute (docs/decisions.md 2026-11-06).
 Index pages are always fetched fresh, so a snapshot is a real sighting. Detail pages are a
 separate step. Exit codes: 2 the site blocked us (stop for 24 hours); 3 a sweep was
 incomplete or a page did not parse; 4 a sweep ended on a network-level fetch failure.
@@ -31,6 +33,8 @@ from housing.db.queries import (
 )
 from housing.parse.kijiji import (
     CATEGORIES,
+    LOCATION,
+    LOCATIONS,
     AdRemovedError,
     IndexCard,
     ParseError,
@@ -80,6 +84,14 @@ class SweepStats:
     fetch_failed: bool = False
     """True when stopped_early was a network-level fetch failure: the one transient
     cause worth a retry."""
+    location: str = LOCATION
+
+    @property
+    def label(self) -> str:
+        """Report label: the bare category for Kitchener-Waterloo, prefixed elsewhere."""
+        if self.location == LOCATION:
+            return self.category
+        return f"{LOCATIONS[self.location].label} {self.category}"
 
 
 def sweep(
@@ -87,6 +99,7 @@ def sweep(
     fetcher: Fetcher,
     category: str,
     *,
+    location: str = LOCATION,
     max_pages: int = 60,
     scraped_at: str | None = None,
 ) -> SweepStats:
@@ -106,17 +119,21 @@ def sweep(
         conn: Open database connection; committed after every page.
         fetcher: The rate-limited fetcher for ``kijiji``.
         category: ``"apartments"`` or ``"rooms"``.
+        location: Market to sweep, a key of ``LOCATIONS`` (default Kitchener-Waterloo).
         max_pages: Safety cap on pages per category.
         scraped_at: Timestamp shared by every snapshot of this run (defaults to now).
     """
     scraped_at = scraped_at or utc_now_iso()
-    stats = SweepStats(category)
+    stats = SweepStats(category, location=location)
+    # The Kitchener-Waterloo fetch name predates the expansion and stays bare so the raw
+    # archive under data/raw/ keeps one naming scheme per market across the whole history.
+    name_stem = f"index_{category}" if location == LOCATION else f"index_{location}_{category}"
     seen_ids: set[str] = set()  # promoted ads repeat across pages; one snapshot per run
     for page in range(1, max_pages + 1):
         try:
             result = fetcher.get(
-                index_url(category, page),
-                f"index_{category}_p{page}",
+                index_url(category, page, location),
+                f"{name_stem}_p{page}",
                 refresh=True,
                 scrub=scrub_page,
             )
@@ -155,13 +172,13 @@ def sweep(
                 posted_at=card.activation_date[:10] if card.activation_date else None,
             )
             insert_snapshot(conn, listing_id, scraped_at, card.price, raw_path)
-            replace_attributes(conn, listing_id, card_attributes(card))
+            replace_attributes(conn, listing_id, {**card_attributes(card), "location": location})
             stats.seen += 1
             stats.new += int(created)
         conn.commit()
         log.info(
             "%s page %d: %d cards, offset %d of %d",
-            category,
+            stats.label,
             page,
             len(index.cards),
             index.offset,
@@ -176,7 +193,7 @@ def sweep(
     if stats.stopped_early is None and stats.seen < COMPLETE_FRACTION * stats.total_count:
         stats.stopped_early = f"only {stats.seen} of {stats.total_count} listings seen"
     if stats.stopped_early:
-        log.error("%s sweep incomplete: %s", category, stats.stopped_early)
+        log.error("%s sweep incomplete: %s", stats.label, stats.stopped_early)
     return stats
 
 
@@ -327,8 +344,14 @@ def _repo_relative(path: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
-    parser = argparse.ArgumentParser(description="Sweep Kijiji KW index pages into the database.")
+    parser = argparse.ArgumentParser(description="Sweep Kijiji index pages into the database.")
     parser.add_argument("--category", choices=[*CATEGORIES, "both"], default="both")
+    parser.add_argument(
+        "--location",
+        choices=[*LOCATIONS, "all"],
+        default=LOCATION,
+        help="market to sweep (default kitchener-waterloo)",
+    )
     parser.add_argument("--max-pages", type=int, default=60, help="safety cap per category")
     parser.add_argument(
         "--details", type=int, default=0, help="also fetch up to N pending detail pages"
@@ -348,27 +371,39 @@ def main(argv: list[str] | None = None) -> int:
     migrate(conn)
     fetcher = Fetcher(SOURCE)
     categories = list(CATEGORIES) if args.category == "both" else [args.category]
+    locations = list(LOCATIONS) if args.location == "all" else [args.location]
     scraped_at = utc_now_iso()
     exit_code = 0
-    for category in categories:
-        try:
-            stats = sweep(conn, fetcher, category, max_pages=args.max_pages, scraped_at=scraped_at)
-        except BlockedError as exc:
-            log.error("blocked, stopping the run: %s", exc)
-            exit_code = 2
+    stop = False  # blocked or a layout change: both end the whole run, every market
+    for location in locations:
+        for category in categories:
+            try:
+                stats = sweep(
+                    conn,
+                    fetcher,
+                    category,
+                    location=location,
+                    max_pages=args.max_pages,
+                    scraped_at=scraped_at,
+                )
+            except BlockedError as exc:
+                log.error("blocked, stopping the run: %s", exc)
+                exit_code, stop = 2, True
+                break
+            except ParseError as exc:
+                log.error("could not parse a %s page (raw copy is saved): %s", category, exc)
+                exit_code, stop = 3, True
+                break
+            line = (
+                f"{stats.label}: {stats.pages} pages, {stats.seen} listings seen,"
+                f" {stats.new} new (site total {stats.total_count})"
+            )
+            if stats.stopped_early:
+                line += f"; incomplete: {stats.stopped_early}"
+                exit_code = exit_code or (4 if stats.fetch_failed else 3)
+            print(line)
+        if stop:
             break
-        except ParseError as exc:
-            log.error("could not parse a %s page (raw copy is saved): %s", category, exc)
-            exit_code = 3
-            break
-        line = (
-            f"{category}: {stats.pages} pages, {stats.seen} listings seen, {stats.new} new"
-            f" (site total {stats.total_count})"
-        )
-        if stats.stopped_early:
-            line += f"; incomplete: {stats.stopped_early}"
-            exit_code = exit_code or (4 if stats.fetch_failed else 3)
-        print(line)
     if args.details and exit_code != 2:
         try:
             details = fetch_details(conn, fetcher, limit=args.details, scraped_at=scraped_at)

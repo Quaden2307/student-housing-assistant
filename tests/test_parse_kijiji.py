@@ -44,6 +44,21 @@ def test_index_urls_have_no_query_string():
     )
 
 
+def test_index_urls_cover_the_expansion_markets():
+    assert (
+        index_url("apartments", location="hamilton")
+        == "https://www.kijiji.ca/b-apartments-condos/hamilton/c37l80014"
+    )
+    assert (
+        index_url("rooms", 2, "london")
+        == "https://www.kijiji.ca/b-room-rental-roommate/london/page-2/c36l1700214"
+    )
+    assert (
+        index_url("apartments", location="guelph")
+        == "https://www.kijiji.ca/b-apartments-condos/guelph/c37l1700242"
+    )
+
+
 def test_apartments_pagination_and_card_count(apartments):
     assert (apartments.total_count, apartments.offset, apartments.limit) == (1612, 0, 40)
     assert len(apartments.cards) == 45  # 40 main + 6 promoted, one of which repeats

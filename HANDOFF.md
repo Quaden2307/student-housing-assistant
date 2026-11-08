@@ -114,9 +114,10 @@ Rooms-only is thin (309 today). We model rooms and whole units together, with `u
 ### Source priority
 
 1. Kijiji, both categories above, KW region (`l1700212`).
-2. One of rentals.ca or Zumper for whole units. Both appear to serve listing data as JSON to their own front ends; verify before building a parser.
-3. Places4Students for student rooms. Small, but it's the student-specific source.
+2. One of rentals.ca or Zumper for whole units. Both appear to serve listing data as JSON to their own front ends; verify before building a parser. *(Update Oct 14: both challenge-walled, dropped — see `docs/sources.md`.)*
+3. Places4Students for student rooms. Small, but it's the student-specific source. *(Update Oct 14: challenge-walled, dropped.)*
 4. Never Facebook or Instagram. A manual-entry form (Google Form writing to the schema) is how team members capture Facebook-group listings, by reading them as humans.
+5. *(Added Nov 6, Caden's sign-off, toward the 10,000-listing target:)* Kijiji in three more university markets — Guelph (`l1700242`), Hamilton (`l80014`), London (`l1700214`) — same categories, same footprint rules, swept daily alongside KW. The market is stored per listing as the `location` attribute; the product stays a Waterloo fair-price check and the extra markets feed the model (`docs/decisions.md` 2026-11-06).
 
 ### Blocking playbook
 

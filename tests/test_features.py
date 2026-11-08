@@ -92,3 +92,27 @@ def test_build_features_uses_latest_price_and_units(tmp_path):
     assert empty["price_per_bedroom"] is None and empty["walk_uw_min"] is None
     assert build_features(conn) == 2  # rebuild is idempotent
     conn.close()
+
+
+def test_build_features_leaves_walk_times_null_outside_kw(tmp_path):
+    # A Hamilton listing: walk-to-UW/Laurier and the ION distance mean nothing there,
+    # so they stay NULL and the model leans on the city categorical instead.
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    conn.execute(
+        "INSERT INTO listings (id, source, source_id, address_text, lat, lon, first_seen,"
+        " last_seen, status) VALUES (1, 'kijiji', '1', '100 Main St W, Hamilton, ON L8P 1H6',"
+        " 43.2585, -79.8740, '2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO snapshots (listing_id, scraped_at, price) VALUES (1, '2026-11-06T00:00:00Z',"
+        " 2200)"
+    )
+    conn.execute("INSERT INTO units (listing_id, unit_type, bedrooms) VALUES (1, '2bed', 2)")
+    conn.commit()
+    assert build_features(conn) == 1
+    row = conn.execute("SELECT * FROM features WHERE listing_id = 1").fetchone()
+    assert row["walk_uw_min"] is None and row["walk_laurier_min"] is None
+    assert row["ion_distance_m"] is None
+    assert row["price_per_bedroom"] == 1100 and row["neighbourhood"] == "L8P"
+    conn.close()

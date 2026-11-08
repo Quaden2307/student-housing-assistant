@@ -78,10 +78,11 @@ CREATE TABLE IF NOT EXISTS listing_attributes (
 );
 
 -- Wayback Machine backfill (lane 2; HANDOFF section 4 names "a separate archive_listings
--- table"). Outside the section 5 contract, added at schema version 3 and pending Caden's
--- sign-off. Archived index pages feed a historical price index; they are never training
--- rows. Prices are stored as listed (nominal dollars) with their dates; any adjustment for
--- inflation or market drift happens at analysis time, never in these tables.
+-- table"). Outside the section 5 contract, added at schema version 3 and signed off with
+-- the 2026-10-23 merge. Archived index pages feed a historical price index; training on
+-- them is opt-in only (load_training include_archive, docs/decisions.md 2026-11-06) and
+-- never the default. Prices are stored as listed (nominal dollars) with their dates; any
+-- adjustment for inflation or market drift happens at analysis time, never in these tables.
 
 -- One row per archived index page: the backfill's work queue and its provenance.
 CREATE TABLE IF NOT EXISTS archive_captures (

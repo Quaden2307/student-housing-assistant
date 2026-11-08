@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 BASE_URL = "https://www.kijiji.ca"
 LOCATION = "kitchener-waterloo"
+"""The default location; the original market and the only one the archive lane covers."""
 NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
 )
@@ -25,13 +26,34 @@ class Category:
 
     name: str
     slug: str
-    code: str
+    prefix: str
+    """The category part of the URL code, e.g. ``c37``; the location code completes it."""
     category_id: int
 
 
 CATEGORIES: dict[str, Category] = {
-    "apartments": Category("apartments", "b-apartments-condos", "c37l1700212", 37),
-    "rooms": Category("rooms", "b-room-rental-roommate", "c36l1700212", 36),
+    "apartments": Category("apartments", "b-apartments-condos", "c37", 37),
+    "rooms": Category("rooms", "b-room-rental-roommate", "c36", 36),
+}
+
+
+@dataclass(frozen=True)
+class Location:
+    """One Kijiji location (market) we sweep. All are Ontario university cities."""
+
+    name: str
+    """The URL slug, also the value of the ``location`` listing attribute."""
+    code: str
+    """Kijiji's location id, e.g. ``l1700212``; appended to the category prefix."""
+    label: str
+    """Short label for report lines and dedup keys."""
+
+
+LOCATIONS: dict[str, Location] = {
+    "kitchener-waterloo": Location("kitchener-waterloo", "l1700212", "kw"),
+    "guelph": Location("guelph", "l1700242", "guelph"),
+    "hamilton": Location("hamilton", "l80014", "hamilton"),
+    "london": Location("london", "l1700214", "london"),
 }
 
 
@@ -83,11 +105,13 @@ class IndexPage:
     cards: list[IndexCard]
 
 
-def index_url(category: str, page: int = 1) -> str:
-    """Return the index URL for a category and 1-based page, without any query string."""
+def index_url(category: str, page: int = 1, location: str = LOCATION) -> str:
+    """Return the index URL for a category, 1-based page and location, with no query string."""
     cat = CATEGORIES[category]
-    base = f"{BASE_URL}/{cat.slug}/{LOCATION}"
-    return f"{base}/{cat.code}" if page == 1 else f"{base}/page-{page}/{cat.code}"
+    loc = LOCATIONS[location]
+    base = f"{BASE_URL}/{cat.slug}/{loc.name}"
+    code = f"{cat.prefix}{loc.code}"
+    return f"{base}/{code}" if page == 1 else f"{base}/page-{page}/{code}"
 
 
 def next_data(html: str) -> dict:

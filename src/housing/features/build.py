@@ -19,6 +19,7 @@ from housing.db import connect
 from housing.db.migrate import migrate
 from housing.geo.distances import walk_laurier_min, walk_uw_min
 from housing.geo.ion_stops import nearest_ion_stop
+from housing.geo.regions import REGIONS
 from housing.scrape.fetch import utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -76,16 +77,20 @@ def build_features(conn: sqlite3.Connection, built_at: str | None = None) -> int
     """Drop and rebuild every row of ``features``; return the number of rows written."""
     built_at = built_at or utc_now_iso()
     prices = dict(conn.execute(_LATEST_PRICES).fetchall())
+    kw = REGIONS["kitchener-waterloo"]
     rows = []
     for lid, lat, lon, address, posted_at, last_seen, unit_type, bedrooms in conn.execute(_ROWS):
-        has_point = lat is not None and lon is not None
-        ion = nearest_ion_stop(lat, lon)[1] if has_point else None
+        # Walk times to UW/Laurier and the ION distance only mean anything inside
+        # Kitchener-Waterloo; for the expansion markets they stay NULL and the model
+        # leans on the city categorical instead (docs/decisions.md 2026-11-06).
+        in_kw = kw.contains(lat, lon)
+        ion = nearest_ion_stop(lat, lon)[1] if in_kw else None
         rows.append(
             (
                 lid,
                 price_per_bedroom(prices.get(lid), unit_type, bedrooms),
-                walk_uw_min(lat, lon) if has_point else None,
-                walk_laurier_min(lat, lon) if has_point else None,
+                walk_uw_min(lat, lon) if in_kw else None,
+                walk_laurier_min(lat, lon) if in_kw else None,
                 ion,
                 neighbourhood_from_address(address),
                 days_on_market(posted_at, last_seen),

@@ -54,6 +54,10 @@ def make_frame(n, *, target, bedrooms=None, neighbourhood=None, unit_type=None):
             "ion_distance_m": [300.0 + 5.0 * i for i in range(n)],
             "move_in_month": pd.array([1 + i % 12 for i in range(n)], dtype="Int64"),
             "listing_month": pd.array([10] * n, dtype="Int64"),
+            "listing_year": pd.array([2026] * n, dtype="Int64"),
+            "city": pd.array(
+                [["kitchener-waterloo", "hamilton"][i % 2] for i in range(n)], dtype="str"
+            ),
             "utilities_included": pd.array([i % 2 == 0 for i in range(n)], dtype="boolean"),
             "furnished": pd.array([i % 3 == 0 for i in range(n)], dtype="boolean"),
             "laundry_in_unit": pd.array([True] * n, dtype="boolean"),
@@ -65,6 +69,7 @@ def make_frame(n, *, target, bedrooms=None, neighbourhood=None, unit_type=None):
             ),
             "first_seen": [f"2026-10-{1 + i % 20:02d}T06:30:00Z" for i in range(n)],
             "last_seen": [f"2026-10-{2 + i % 20:02d}T06:30:00Z" for i in range(n)],
+            "is_archive": pd.array([False] * n, dtype="boolean"),
         }
     )
 

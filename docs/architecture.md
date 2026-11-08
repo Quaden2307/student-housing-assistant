@@ -16,9 +16,11 @@ and the notebooks.
 
 Four lanes feed one SQLite file, `data/housing.db`:
 
-1. **Live Kijiji sweep** — both KW categories (apartments, rooms), daily at 06:30 via a macOS
-   launchd job. Fully automated: sweep, gone-marking, detail pages, extraction, dedup,
-   features, Discord report.
+1. **Live Kijiji sweep** — four markets since 2026-11-06 (Kitchener-Waterloo, Guelph,
+   Hamilton, London; both categories each, `daily.SWEEP_PLAN`), daily at 06:30 via a macOS
+   launchd job. Fully automated: sweeps, gone-marking, detail pages, extraction, dedup,
+   features, Discord report. Each listing's market is stored as the `location` attribute;
+   the product remains a Waterloo fair-price check — the extra markets feed the model.
 2. **Wayback backfill** — archived captures of the same index pages, 2014 to 2026, into the
    separate `archive_*` tables (9,316 unique past ads; see `docs/sources.md` section 7). Built;
    run manually, paced at one request per 15 to 20 seconds for archive.org.
@@ -192,19 +194,20 @@ executes them:
    (launchd fires the job the moment the Mac wakes, often before Wi-Fi is back). If it never
    resolves: print and post an ALERT, exit 4; nothing was fetched, nothing changed.
 4. **`migrate(conn)`**: apply the schema; safe on every start-up.
-5. **Sweep apartments, then rooms** (`scrape.kijiji.sweep`), one shared `scraped_at` for the
-   run. A category whose sweep hits a network-level fetch failure returns *partial stats*
-   (`fetch_failed` set, pages already committed kept) instead of raising, so one dead category
-   never costs the other. `BlockedError` ends the run (exit 2); `ParseError` grades 3.
-6. **One bounded retry pass**: each category that fetch-failed *or saw zero listings* is
+5. **Sweep every (market, category) in `SWEEP_PLAN`** (`scrape.kijiji.sweep`) — KW first,
+   then Guelph, Hamilton, London; apartments then rooms each — one shared `scraped_at` for
+   the run. A sweep that hits a network-level fetch failure returns *partial stats*
+   (`fetch_failed` set, pages already committed kept) instead of raising, so one dead sweep
+   never costs the others. `BlockedError` ends the run (exit 2); `ParseError` grades 3.
+6. **One bounded retry pass**: each sweep that fetch-failed *or saw zero listings* is
    retried once, behind a fresh `wait_for_network` of up to 300 awake-seconds. Page cap, stuck
    pagination and under-90-percent sweeps are answered-page anomalies, not transient, and are
    never retried. The retry reuses the run's `scraped_at`, so snapshots update instead of
    duplicating; `new` counts from both attempts are summed (upsert creations are one-time
-   events). Worst case about 42 extra requests.
-7. **Grade fetch failures**: any category still fetch-failed makes the exit code 4 (blocked, 2,
+   events).
+7. **Grade fetch failures**: any sweep still fetch-failed makes the exit code 4 (blocked, 2,
    wins over 4, which wins over incomplete, 3).
-8. **`mark_gone`** — only after a *complete* final picture (both categories swept, each saw
+8. **`mark_gone`** — only after a *complete* final picture (every planned sweep done, each saw
    listings and none stopped early): active listings last seen more than **40 hours** ago go
    `status = 'gone'`. The rule is time-based, not sweep-based: after failed days, the next
    complete sweep marks the whole backlog at once (155 and 265 in one day after the October
@@ -220,7 +223,8 @@ executes them:
 10. **`extract_all`** (everything re-extracted, not just missing), then
 11. **`assign_dedup_keys`** (idempotent, self-committing; needs the fresh `units` rows), then
 12. **`build_features`** (drop and rebuild). These offline steps run whatever the sweep's fate.
-13. **Report**: one line with per-category seen/new, gone, details fetched/failed/removed,
+13. **Report**: one line with per-sweep seen/new (expansion markets prefixed, e.g.
+    `hamilton apartments`), gone, details fetched/failed/removed,
     units, dedup changes, features rows, DB totals, request count, and the backlog counters
     `pending details` and `unkeyed`; printed and posted to Discord, `ALERT`-prefixed when
     anything needs a human.
@@ -305,7 +309,8 @@ descriptor, so the rotation takes effect on the following run.
 
 ```sh
 uv run python scripts/sweep.py                             # full manual daily run
-uv run python -m housing.scrape.kijiji --category rooms    # rerun one category
+uv run python -m housing.scrape.kijiji --category rooms    # rerun one category (KW)
+uv run python -m housing.scrape.kijiji --location hamilton # rerun one market; --location all for every market
 uv run python -m housing.scrape.backfill --inventory       # queue new archive captures (2 requests)
 uv run python -m housing.scrape.backfill --download 40     # fetch queued captures (~12 min)
 uv run python -m housing.scrape.backfill --rebuild         # re-parse stored captures, no network

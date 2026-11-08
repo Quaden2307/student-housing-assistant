@@ -8,7 +8,7 @@ contract; `docs/decisions.md` records every call made here; `docs/architecture.m
 
 | Lane | What | Cadence | State |
 |---|---|---|---|
-| 1. Current | Kijiji KW index sweep, both categories, through the embedded page JSON; detail pages for the full text; everything below | Daily, 06:30 via launchd | Built |
+| 1. Current | Kijiji index sweep over four markets (Kitchener-Waterloo, Guelph, Hamilton, London since 2026-11-06), both categories each, through the embedded page JSON; detail pages for the full text; everything below | Daily, 06:30 via launchd | Built |
 | 2. Historical | Wayback captures of the same index pages (2014 to 2026) into a separate `archive_listings` table, for a monthly price index. Mark's lane | Manual runs, paced at one request per 15 to 20 s | Built: 9,316 past ads spanning 2014 to 2026; see `docs/sources.md` section 7 |
 | 3. Manual | A Google Form for Facebook-group listings read by people, written with `source = 'manual'` | Ongoing | Planned |
 | 4. Reference | Campus coordinates, ION stations (hardcoded from GTFS), CMHC and asking-rent anchors for sanity checks | Once | Built where needed |
@@ -20,8 +20,8 @@ stops on a site problem without reporting it.
 
 | Step | Module | Reads | Writes | Requests |
 |---|---|---|---|---|
-| Index sweep, apartments then rooms | `scrape.kijiji.sweep` | index pages (40 cards each), always fetched fresh | `listings` upsert, one `snapshots` row per listing, every card attribute into `listing_attributes`. A network-level fetch failure keeps the category's partial stats (pages already committed stay); after both categories, one retry pass re-sweeps only categories that fetch-failed or saw zero listings (page cap, stuck pagination and under-90-percent are never retried) | about 48, plus about 42 worst case for the retry pass |
-| Gone rule | `db.queries.mark_gone` | `listings.last_seen` | `status = 'gone'` for active listings last seen over 40 h ago (time-based, not sweep-based), only when both sweeps were complete: last page reached within the cap, at least 90 percent of the site's count seen, pagination advancing. After failed days the next complete sweep marks the whole backlog in one burst; failed days defer, never fabricate, gone markings | 0 |
+| Index sweeps, every market x category in `daily.SWEEP_PLAN` (KW first, then Guelph, Hamilton, London; apartments then rooms each) | `scrape.kijiji.sweep` | index pages (40 cards each), always fetched fresh | `listings` upsert, one `snapshots` row per listing, every card attribute plus the market (`location`) into `listing_attributes`. A network-level fetch failure keeps that sweep's partial stats (pages already committed stay); after the whole plan, one retry pass re-sweeps only sweeps that fetch-failed or saw zero listings (page cap, stuck pagination and under-90-percent are never retried) | about 130 across the four markets, plus the failed sweep's pages worst case for the retry pass |
+| Gone rule | `db.queries.mark_gone` | `listings.last_seen` | `status = 'gone'` for active listings last seen over 40 h ago (time-based, not sweep-based), only when every planned sweep was complete: last page reached within the cap, at least 90 percent of the site's count seen, pagination advancing. After failed days the next complete sweep marks the whole backlog in one burst; failed days defer, never fabricate, gone markings | 0 |
 | Details | `scrape.kijiji.fetch_details` | pending listings (no `detail_fetched_at`), rooms first, newest first; failed ones retried after 3 days | `listings.description` (contact details stripped), address, coordinates and posting date fill gaps, detail attributes, `image_count`, `views`, `end_date`, `detail_status`, `poster_hash`; a removed ad gets `detail_error = removed`; the pass stops after 3 failures in a row. A fetch error with no HTTP status is the network dying, not the ad's fault: no penalty, the pass waits for DNS and aborts only when it never returns | up to 300 |
 | Extraction | `parse.extract.extract_all` | title, description, attributes | `units` (rewritten for every listing), `text_*` flags into `listing_attributes` | 0 |
 | Dedup keys | `features.dedup.assign_dedup_keys` | listings (address, coordinates) joined to units | `listings.dedup_key`, only where it changed (idempotent, self-committing) | 0 |
@@ -111,9 +111,11 @@ the form or a URL. Tier A is the model's input space; tier B exists for analysis
 | `laundry_in_unit` | attributes, text | `units` | |
 | `building_type` | registry, wording, unit type | `units` | purpose-built towers price per bed with ensuites |
 | `year_built_after_2018` | registry years, "new build" text | `units` | rent-control exemption; CMHC shows post-2000 stock renting about 32 percent above 1980s stock in Waterloo |
-| `walk_uw_min`, `walk_laurier_min` | coordinates | `features` | straight line at 80 m per minute; the nearer campus matters most |
-| `ion_distance_m` | coordinates, 19 stations | `features` | |
+| `walk_uw_min`, `walk_laurier_min` | coordinates | `features` | straight line at 80 m per minute; the nearer campus matters most. KW only: NULL in the expansion markets, whose campus anchors are postponed (decision 2026-11-06) |
+| `ion_distance_m` | coordinates, 19 stations | `features` | KW only, as above |
 | `neighbourhood` | postal prefix in the address | `features` | N2L holds both campuses; CMHC's "Waterloo University" 2-bed rents 15 percent above Uptown |
+| `city` | the sweep's market (`location` attribute) | `listing_attributes` | Kitchener-Waterloo, Guelph, Hamilton or London; pre-expansion rows default to KW |
+| listing year | `first_seen` (capture time for archive rows) | derived in the loader | separates eras when training with `--archive`; a linear model cannot extrapolate it (see decision 2026-11-06) |
 | `sqft` | `areainfeet` | `listing_attributes` | on about 85 percent of apartments cards; `0` means not given |
 | `text_bathroom_private` | text | `listing_attributes` | ensuite rooms ask $1,050 to $1,350 versus $610 to $1,000 |
 | `text_is_takeover` | text | `listing_attributes` | a takeover inherits an older rent |
@@ -135,7 +137,7 @@ Applied when building the clean table (Sprint 2), not in the raw tables:
 
 | Trap | Rule |
 |---|---|
-| Out-of-region listings in the KW index | drop outside about lat 43.36 to 43.56, lon -80.65 to -80.35 |
+| Out-of-region listings in a market's index | drop outside the listing's own market box (`housing.geo.regions`; KW is about lat 43.36 to 43.56, lon -80.65 to -80.35). Waived for archive rows: their provenance (the KW index pages) fixes the market and most carry no coordinates |
 | No price (`price_type = CONTACT`) | drop |
 | Attribute garbage | bedrooms 1 to 8, bathrooms 1 to 6, room price $300 to $1,800, per-bedroom price $300 to $3,000 |
 | Per-term or per-contract totals | text with "per term", "per semester", "4 months for": convert or drop |
@@ -145,11 +147,15 @@ Applied when building the clean table (Sprint 2), not in the raw tables:
 
 ## 5. Dedup and splits (Sprint 2)
 
-`dedup_key` = normalized address (lowercase, unit numbers stripped, or coordinates rounded
-to about 50 m when there is no street number) + `unit_type` + `bedrooms`. Two listings with
-the same key and prices within 5 percent are the same unit. Every ad keeps its own
-`listings` row; training uses one row per key, cross-validation groups by key, and
-comparables show the most recent ad of each unit.
+`dedup_key` = city + normalized address (lowercase, unit numbers and city tails stripped,
+or coordinates rounded to about 50 m when there is no street number) + `unit_type` +
+`bedrooms`. The city segment exists because normalization strips city names and the same
+street address recurs across the four markets (decision 2026-11-06); geo keys carry no
+city since coordinates are globally unique. Two listings with the same key and prices
+within 5 percent are the same unit. Every ad keeps its own `listings` row; training uses
+one row per key, cross-validation groups by key, and comparables show the most recent ad
+of each unit. Training can opt archive rows in (`--archive`); they group under per-ad
+`archive:<id>` sentinels and live duplicates (`in_live = 1`) are excluded.
 
 ## 6. Maintenance scripts
 

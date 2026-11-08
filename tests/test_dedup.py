@@ -39,9 +39,19 @@ def test_normalize_address_keeps_street_named_after_city():
 
 def test_dedup_key_addr_form():
     key = dedup_key("Unit 2 - 123 King Street North, Waterloo, ON N2J 2X8", None, None, "room", 5)
-    assert key == "addr:123 king st n|room|5"
+    assert key == "addr:kw:123 king st n|room|5"
     # the address wins over coordinates, missing unit fields become "?"
-    assert dedup_key("123 King St N", 43.0, -80.0, None, None) == "addr:123 king st n|?|?"
+    assert dedup_key("123 King St N", 43.0, -80.0, None, None) == "addr:kw:123 king st n|?|?"
+
+
+def test_dedup_key_separates_same_street_across_cities():
+    # "123 King St" exists in every market we sweep; the city segment keeps them apart,
+    # and the new city names are stripped from the address just like Waterloo's.
+    kw = dedup_key("123 King St N, Waterloo, ON", None, None, "2bed", 2, city="kw")
+    ham = dedup_key("123 King St N, Hamilton, ON", None, None, "2bed", 2, city="hamilton")
+    assert kw == "addr:kw:123 king st n|2bed|2"
+    assert ham == "addr:hamilton:123 king st n|2bed|2"
+    assert kw != ham
 
 
 def test_dedup_key_geo_fallback_snaps_to_grid():
@@ -100,11 +110,27 @@ def test_assign_dedup_keys_sets_shares_and_is_idempotent(tmp_path):
     conn = _make_db(tmp_path / "t.db")
     assert assign_dedup_keys(conn) == 4  # listing 5 stays NULL, so it does not count
     keys = dict(conn.execute("SELECT id, dedup_key FROM listings"))
-    assert keys[1] == keys[2] == "addr:250 lester st|room|5"  # two ads, one unit
-    assert keys[3] == "addr:44 chapel st|2bed|2"
+    assert keys[1] == keys[2] == "addr:kw:250 lester st|room|5"  # two ads, one unit
+    assert keys[3] == "addr:kw:44 chapel st|2bed|2"
     assert keys[4] == "geo:43.4725:-80.5450|1bed|1"
     assert keys[5] is None
     assert assign_dedup_keys(conn) == 0  # idempotent
+
+
+def test_assign_dedup_keys_uses_the_location_attribute(tmp_path):
+    conn = _make_db(tmp_path / "loc.db")
+    _add(conn, 6, address="44 Chapel St, Hamilton, ON", unit_type="2bed", bedrooms=2)
+    conn.execute(
+        "INSERT INTO listing_attributes (listing_id, name, value)"
+        " VALUES (6, 'location', 'hamilton')"
+    )
+    conn.commit()
+    assign_dedup_keys(conn)
+    keys = dict(conn.execute("SELECT id, dedup_key FROM listings"))
+    # Same street address in two markets: pre-expansion rows (no location attribute)
+    # default to Kitchener-Waterloo, the Hamilton row keys under its own city.
+    assert keys[3] == "addr:kw:44 chapel st|2bed|2"
+    assert keys[6] == "addr:hamilton:44 chapel st|2bed|2"
 
 
 def test_assign_dedup_keys_cli(tmp_path, capsys):

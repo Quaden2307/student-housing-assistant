@@ -20,6 +20,7 @@ from pathlib import Path
 
 from housing.db import connect
 from housing.db.migrate import migrate
+from housing.parse.kijiji import LOCATION, LOCATIONS
 from housing.parse.units import normalise_address
 
 GRID_DEG = 0.0005
@@ -45,8 +46,11 @@ _UNIT_MARKER_RE = re.compile(
 _TRAILING_UNIT_RE = re.compile(r"[\s,.:-]*(?:\b(?:unit|apt|apartment|suite)\b\s*#?\s*\w+|#\s*\w+)$")
 # Canadian postal code, with or without the inner space ("N2L 3G1", "n2l3g1").
 _POSTAL_RE = re.compile(r"\b[a-z]\d[a-z]\s?\d[a-z]\d\b")
-# Trailing city / province / country components say nothing about the building.
-_TAIL_RE = re.compile(r"[\s,.-]*\b(?:canada|ontario|ont|on|kitchener|waterloo)\b[\s,.-]*$")
+# Trailing city / province / country components say nothing about the building; the
+# city lives in the key's own city segment instead (every swept market is listed here).
+_TAIL_RE = re.compile(
+    r"[\s,.-]*\b(?:canada|ontario|ont|on|kitchener|waterloo|guelph|hamilton|london)\b[\s,.-]*$"
+)
 _EDGE_SEPARATORS_RE = re.compile(r"^[\s,.-]+|[\s,.-]+$")
 
 
@@ -95,6 +99,7 @@ def dedup_key(
     lon: float | None,
     unit_type: str | None,
     bedrooms: int | None,
+    city: str = "kw",
 ) -> str | None:
     """Build the dedup key for one listing (HANDOFF section 5).
 
@@ -104,11 +109,15 @@ def dedup_key(
         lon: Longitude, used with ``lat``.
         unit_type: Section 3 unit type; missing becomes ``"?"``.
         bedrooms: Bedroom count; missing becomes ``"?"``.
+        city: Short market label (``Location.label``). Part of the address key
+            because normalization strips city names, and "123 king st n" exists
+            in every market we sweep (docs/decisions.md 2026-11-06).
 
     Returns:
-        ``"addr:<normalized>|<unit_type>|<bedrooms>"`` when the address
+        ``"addr:<city>:<normalized>|<unit_type>|<bedrooms>"`` when the address
         normalizes; else ``"geo:<lat>:<lon>|..."`` with both coordinates
-        snapped to the :data:`GRID_DEG` grid (about 50 m); else None when there
+        snapped to the :data:`GRID_DEG` grid (about 50 m) -- coordinates are
+        globally unique, so geo keys carry no city; else None when there
         is no location at all. Snapping is rounding, not clustering
         (docs/pipeline.md section 5): two pins in the same cell share a key,
         but pins a few metres apart that straddle a cell line do not, so an
@@ -118,7 +127,7 @@ def dedup_key(
     tail = f"|{unit_type or '?'}|{bedrooms if bedrooms is not None else '?'}"
     address = normalize_address(address_text)
     if address:
-        return f"addr:{address}{tail}"
+        return f"addr:{city}:{address}{tail}"
     if lat is not None and lon is not None:
         # Multiples of 0.0005 are exact at four decimals, so the format is stable.
         snapped_lat = round(lat / GRID_DEG) * GRID_DEG
@@ -141,13 +150,28 @@ def assign_dedup_keys(conn: sqlite3.Connection) -> int:
         How many rows changed.
     """
     rows = conn.execute(
-        "SELECT l.id, l.address_text, l.lat, l.lon, l.dedup_key, u.unit_type, u.bedrooms"
+        "SELECT l.id, l.address_text, l.lat, l.lon, l.dedup_key, u.unit_type, u.bedrooms,"
+        " a.value"
         " FROM listings l LEFT JOIN units u ON u.listing_id = l.id"
+        " LEFT JOIN listing_attributes a ON a.listing_id = l.id AND a.name = 'location'"
     ).fetchall()
+    # Listings swept before the expansion carry no location attribute; they are all
+    # Kitchener-Waterloo (the only market swept until 2026-11-06).
+    labels = {location.name: location.label for location in LOCATIONS.values()}
     updates = [
         (key, listing_id)
-        for listing_id, address, lat, lon, current, unit_type, bedrooms in rows
-        if (key := dedup_key(address, lat, lon, unit_type, bedrooms)) != current
+        for listing_id, address, lat, lon, current, unit_type, bedrooms, loc in rows
+        if (
+            key := dedup_key(
+                address,
+                lat,
+                lon,
+                unit_type,
+                bedrooms,
+                city=labels.get(loc or LOCATION, labels[LOCATION]),
+            )
+        )
+        != current
     ]
     with conn:
         conn.executemany("UPDATE listings SET dedup_key = ? WHERE id = ?", updates)

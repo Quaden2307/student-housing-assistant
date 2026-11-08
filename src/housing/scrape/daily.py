@@ -24,7 +24,7 @@ from housing.features.build import build_features
 from housing.features.dedup import assign_dedup_keys
 from housing.notify import discord
 from housing.parse.extract import extract_all
-from housing.parse.kijiji import CATEGORIES, ParseError
+from housing.parse.kijiji import CATEGORIES, LOCATIONS, ParseError
 from housing.paths import REPO_ROOT
 from housing.scrape.fetch import (
     BlockedError,
@@ -43,12 +43,18 @@ GONE_AFTER_HOURS = 40
 
 About two daily runs when runs succeed, but after failed days the next complete sweep marks
 the whole backlog at once (155 and 265 gone in one day after the October outages).
-``mark_gone`` only runs after a complete sweep of both categories, so failed days defer,
-never fabricate, gone markings.
+``mark_gone`` only runs after every sweep in ``SWEEP_PLAN`` came back complete, so failed
+days defer, never fabricate, gone markings.
 """
 
 RETRY_NETWORK_WAIT = 300.0
 """Awake seconds to wait for DNS before the one retry pass over fetch-failed categories."""
+
+SWEEP_PLAN: list[tuple[str, str]] = [
+    (location, category) for location in LOCATIONS for category in CATEGORIES
+]
+"""Every (location, category) pair the daily run sweeps, in order. Kitchener-Waterloo
+first (the original market), then the expansion markets (docs/decisions.md 2026-11-06)."""
 
 ERR_LOG_MAX_BYTES = 5 * 1024 * 1024
 """Rotate ``logs/sweep.err.log`` to ``.1`` once it passes this size."""
@@ -76,19 +82,19 @@ class DailyReport:
     def problems(self) -> list[str]:
         """What a human should look at: errors, empty or incomplete sweeps, aborted details."""
         found = list(self.errors)
-        found += [f"{s.category}: 0 seen" for s in self.sweeps if s.seen == 0]
+        found += [f"{s.label}: 0 seen" for s in self.sweeps if s.seen == 0]
         found += [
-            f"{s.category} incomplete: {s.stopped_early}" for s in self.sweeps if s.stopped_early
+            f"{s.label} incomplete: {s.stopped_early}" for s in self.sweeps if s.stopped_early
         ]
         if self.details.aborted:
             found.append(f"details {self.details.aborted}")
-        if len(self.sweeps) < len(CATEGORIES):
-            found.append(f"only {len(self.sweeps)} of {len(CATEGORIES)} categories swept")
+        if len(self.sweeps) < len(SWEEP_PLAN):
+            found.append(f"only {len(self.sweeps)} of {len(SWEEP_PLAN)} sweeps done")
         return found
 
     def message(self) -> str:
         """One-line summary; prefixed with ALERT when something needs a human."""
-        parts = [f"{s.category} {s.seen} seen ({s.new} new)" for s in self.sweeps]
+        parts = [f"{s.label} {s.seen} seen ({s.new} new)" for s in self.sweeps]
         text = (
             f"Housing sweep {self.started_at[:10]}: " + ", ".join(parts) + f"; {self.gone} gone;"
             f" details {self.details.fetched} fetched/{self.details.failed} failed"
@@ -126,9 +132,16 @@ def run(
     scraped_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     report = DailyReport(started_at=scraped_at)
     fetch_failed_outside = False
-    for category in CATEGORIES:
+    for location, category in SWEEP_PLAN:
         try:
-            stats = sweep(conn, fetcher, category, max_pages=max_pages, scraped_at=scraped_at)
+            stats = sweep(
+                conn,
+                fetcher,
+                category,
+                location=location,
+                max_pages=max_pages,
+                scraped_at=scraped_at,
+            )
         except BlockedError as exc:
             report.errors.append(f"blocked: {exc}")
             report.exit_code = 2
@@ -149,19 +162,24 @@ def run(
             if not (failed.fetch_failed or failed.seen == 0):
                 continue  # page cap / stuck pagination / <90% are not transient
             if not wait_for_network(timeout=RETRY_NETWORK_WAIT):
-                log.error("network still gone; keeping %s partial stats", failed.category)
+                log.error("network still gone; keeping %s partial stats", failed.label)
                 break
-            log.info("retrying %s once: %s", failed.category, failed.stopped_early)
+            log.info("retrying %s once: %s", failed.label, failed.stopped_early)
             try:
                 again = sweep(
-                    conn, fetcher, failed.category, max_pages=max_pages, scraped_at=scraped_at
+                    conn,
+                    fetcher,
+                    failed.category,
+                    location=failed.location,
+                    max_pages=max_pages,
+                    scraped_at=scraped_at,
                 )
             except BlockedError as exc:
                 report.errors.append(f"blocked during retry: {exc}")
                 report.exit_code = 2
                 break
             except ParseError as exc:
-                report.errors.append(f"{failed.category} parse failure on retry: {exc}")
+                report.errors.append(f"{failed.label} parse failure on retry: {exc}")
                 break
             # Upsert creations are one-time events, disjoint across the two attempts.
             again.new += failed.new
@@ -170,7 +188,7 @@ def run(
         fetch_failed_outside or any(s.fetch_failed for s in report.sweeps)
     ):
         report.exit_code = 4
-    complete = len(report.sweeps) == len(CATEGORIES) and all(
+    complete = len(report.sweeps) == len(SWEEP_PLAN) and all(
         s.seen > 0 and not s.stopped_early for s in report.sweeps
     )
     if report.exit_code == 0 and not complete:

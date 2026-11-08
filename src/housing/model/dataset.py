@@ -13,6 +13,7 @@ Reads only: this module never writes to any table.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -20,6 +21,11 @@ from dataclasses import dataclass
 import pandas as pd
 
 from housing.features.build import price_per_bedroom
+from housing.geo.distances import walk_laurier_min, walk_uw_min
+from housing.geo.ion_stops import nearest_ion_stop
+from housing.geo.regions import REGIONS, in_region
+from housing.parse.kijiji import LOCATION
+from housing.parse.units import extract as extract_unit
 
 TARGET = "price_per_bedroom"
 """The model target (HANDOFF section 3). Never a model input."""
@@ -27,7 +33,14 @@ TARGET = "price_per_bedroom"
 GROUP = "dedup_key"
 """Grouping column for cross-validation splits and dedup."""
 
-CATEGORICALS = ["unit_type", "lease_term", "building_type", "neighbourhood", "landlord_type"]
+CATEGORICALS = [
+    "unit_type",
+    "lease_term",
+    "building_type",
+    "neighbourhood",
+    "city",
+    "landlord_type",
+]
 """Categorical model inputs (str or NA)."""
 
 NUMERICS = [
@@ -39,6 +52,7 @@ NUMERICS = [
     "ion_distance_m",
     "move_in_month",
     "listing_month",
+    "listing_year",
 ]
 """Numeric model inputs (NaN / NA allowed)."""
 
@@ -54,8 +68,7 @@ BOOLEANS = [
 """Boolean model inputs (pandas ``boolean`` dtype, NA allowed)."""
 
 # Cleaning bounds from docs/pipeline.md section 4 ("Cleaning rules for the training view").
-_LAT_BOUNDS = (43.36, 43.56)
-_LON_BOUNDS = (-80.65, -80.35)
+# The out-of-region rule checks each listing against its own market's box (geo.regions).
 _BEDROOM_BOUNDS = (1, 8)
 _BATHROOM_BOUNDS = (1, 6)
 _TARGET_BOUNDS = (300.0, 3000.0)
@@ -104,8 +117,11 @@ _DTYPES: dict[str, str] = {
     "is_takeover": "boolean",
     "internet_included": "boolean",
     "listing_month": "Int64",
+    "listing_year": "Int64",
+    "city": "str",
     "first_seen": "str",
     "last_seen": "str",
+    "is_archive": "boolean",
 }
 
 COLUMNS = list(_DTYPES)
@@ -133,7 +149,8 @@ attrs AS (
            MAX(CASE WHEN name = 'text_bathroom_private' THEN value END) AS bathroom_private,
            MAX(CASE WHEN name = 'text_is_takeover' THEN value END) AS is_takeover,
            MAX(CASE WHEN name = 'text_internet_included' THEN value END) AS internet_included,
-           MAX(CASE WHEN name = 'category' THEN value END) AS category
+           MAX(CASE WHEN name = 'category' THEN value END) AS category,
+           MAX(CASE WHEN name = 'location' THEN value END) AS location
     FROM listing_attributes
     GROUP BY listing_id
 )
@@ -145,7 +162,7 @@ SELECT l.id AS listing_id, l.dedup_key, l.title, l.description, l.lat, l.lon,
        u.building_type, u.year_built_after_2018,
        f.walk_uw_min, f.walk_laurier_min, f.ion_distance_m, f.neighbourhood,
        a.areainfeet, a.landlord_type, a.bathroom_private, a.is_takeover,
-       a.internet_included, a.category
+       a.internet_included, a.category, a.location
 FROM listings l
 LEFT JOIN units u ON u.listing_id = l.id
 LEFT JOIN features f ON f.listing_id = l.id
@@ -175,6 +192,8 @@ class CleaningReport:
     duplicates: int = 0
     bathrooms_cleared: int = 0
     kept: int = 0
+    archive_in: int = 0
+    """Archive rows that entered cleaning (``include_archive=True`` only)."""
 
     def __str__(self) -> str:
         drops = (
@@ -191,10 +210,13 @@ class CleaningReport:
         )
         dropped = ", ".join(f"{name}={count}" for name, count in drops)
         total = sum(count for _, count in drops)
-        return (
+        text = (
             f"clean table: kept {self.kept} rows; dropped {total} ({dropped});"
             f" bathrooms set NA on {self.bathrooms_cleared}"
         )
+        if self.archive_in:
+            text += f"; archive rows in: {self.archive_in}"
+        return text
 
 
 def _bools(values: pd.Series, missing: bool | None) -> pd.Series:
@@ -228,8 +250,94 @@ def _empty_frame() -> pd.DataFrame:
     return pd.DataFrame({column: pd.Series(dtype=dtype) for column, dtype in _DTYPES.items()})
 
 
+_ARCHIVE_QUERY = """
+SELECT source_id, category, title, address_text, lat, lon,
+       first_seen, last_seen, last_price, attributes, neighbourhood
+FROM archive_listings
+WHERE in_live = 0 AND last_price IS NOT NULL
+"""
+
+
+def _archive_frame(conn: sqlite3.Connection) -> pd.DataFrame:
+    """The Wayback archive rows shaped like the live query's output, before cleaning.
+
+    Each row re-runs the live pipeline's unit extraction
+    (:func:`housing.parse.units.extract`) over the stored attribute JSON and the title,
+    so an archive row's bedrooms, unit type and booleans mean exactly what a live row's
+    do. Ads the live sweep also has (``in_live = 1``) and ads without a price are
+    excluded up front. ``listing_id`` is a negative ordinal: these rows live in
+    ``archive_listings``, not ``listings``, and a negative id can never collide with a
+    real listing id in one frame. Every archive row is Kitchener-Waterloo; the lane
+    only backfills the KW index pages.
+    """
+    rows = []
+    for ordinal, row in enumerate(conn.execute(_ARCHIVE_QUERY), start=1):
+        (
+            source_id,
+            category,
+            title,
+            address,
+            lat,
+            lon,
+            first_seen,
+            last_seen,
+            price,
+            attributes_json,
+            neighbourhood,
+        ) = row
+        try:
+            raw = json.loads(attributes_json) if attributes_json else {}
+        except ValueError:
+            raw = {}
+        attrs = {name: "|".join(str(v) for v in values) for name, values in raw.items()}
+        unit = extract_unit(
+            category=category or "apartments",
+            title=title or "",
+            description=None,
+            attributes=attrs,
+            address=address,
+        )
+        in_kw = REGIONS[LOCATION].contains(lat, lon)
+        rows.append(
+            {
+                "listing_id": -ordinal,
+                "dedup_key": f"archive:{source_id}",
+                "title": title,
+                "description": None,
+                "lat": lat,
+                "lon": lon,
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "price": price,
+                "unit_type": unit.unit_type,
+                "bedrooms": unit.bedrooms,
+                "bathrooms": unit.bathrooms,
+                "lease_term": unit.lease_term,
+                "move_in_month": unit.move_in_month,
+                "utilities_included": unit.utilities_included,
+                "furnished": unit.furnished,
+                "laundry_in_unit": unit.laundry_in_unit,
+                "building_type": unit.building_type,
+                "year_built_after_2018": unit.year_built_after_2018,
+                "walk_uw_min": walk_uw_min(lat, lon) if in_kw else None,
+                "walk_laurier_min": walk_laurier_min(lat, lon) if in_kw else None,
+                "ion_distance_m": nearest_ion_stop(lat, lon)[1] if in_kw else None,
+                "neighbourhood": neighbourhood,
+                "areainfeet": attrs.get("areainfeet"),
+                "landlord_type": attrs.get("forrentbyhousing"),
+                "bathroom_private": unit.flags.get("bathroom_private"),
+                "is_takeover": unit.flags.get("is_takeover"),
+                "internet_included": unit.flags.get("internet_included"),
+                "category": category,
+                "location": LOCATION,
+                "is_archive": True,
+            }
+        )
+    return pd.DataFrame(rows, dtype=object)
+
+
 def load_training(
-    conn: sqlite3.Connection, *, dedup: bool = True
+    conn: sqlite3.Connection, *, dedup: bool = True, include_archive: bool = False
 ) -> tuple[pd.DataFrame, CleaningReport]:
     """Build the Phase 1c clean training table.
 
@@ -272,6 +380,13 @@ def load_training(
         conn: Open database connection; nothing is written to it.
         dedup: Keep one row per dedup key (the default for training). Pass
             False to keep every surviving ad, e.g. for the EDA notebook.
+        include_archive: Also load the Wayback archive rows as training rows
+            (docs/decisions.md 2026-11-06; off by default). Archive rows are
+            index-card data only: no walk times for most, no description, and
+            prices from their own era, which is why ``listing_year`` is a model
+            input. Ads the live sweep also has (``in_live = 1``) are excluded,
+            and the location rules are waived for archive rows because their
+            provenance (the KW index pages) already fixes the market.
 
     Returns:
         The clean frame (columns and dtypes exactly :data:`COLUMNS` /
@@ -281,6 +396,12 @@ def load_training(
     cursor = conn.execute(_QUERY)
     names = [description[0] for description in cursor.description]
     df = pd.DataFrame([tuple(row) for row in cursor.fetchall()], columns=names, dtype=object)
+    df["is_archive"] = False
+    if include_archive:
+        archive = _archive_frame(conn)
+        report.archive_in = len(archive)
+        if not archive.empty:
+            df = pd.concat([df, archive], ignore_index=True) if not df.empty else archive
     if df.empty:
         return _empty_frame(), report
 
@@ -307,6 +428,11 @@ def load_training(
     df["listing_month"] = pd.to_numeric(
         df["first_seen"].astype("str").str[5:7], errors="coerce"
     ).astype("Int64")
+    df["listing_year"] = pd.to_numeric(
+        df["first_seen"].astype("str").str[:4], errors="coerce"
+    ).astype("Int64")
+    # Pre-expansion listings carry no location attribute; they are all Kitchener-Waterloo.
+    df["city"] = df["location"].where(df["location"].notna(), LOCATION)
     for column in (
         "utilities_included",
         "furnished",
@@ -318,13 +444,23 @@ def load_training(
     for column in ("bathroom_private", "is_takeover"):
         df[column] = _bools(df[column], missing=False)
 
-    # Drop rules, in docs/pipeline.md order; each row counted once.
+    # Drop rules, in docs/pipeline.md order; each row counted once. The two location
+    # rules only bind live rows: an archive row's market is fixed by its provenance
+    # (the KW index pages) and most archive captures carry no coordinates at all.
     df = _drop(df, df["price"].isna(), report, "no_price")
     # No coordinates is a geocoding gap, not an out-of-region unit; count it apart so
     # the report shows what missing locations cost (lat/lon are required by section 3).
-    df = _drop(df, df["lat"].isna() | df["lon"].isna(), report, "no_location")
-    out_of_region = ~df["lat"].between(*_LAT_BOUNDS) | ~df["lon"].between(*_LON_BOUNDS)
-    df = _drop(df, out_of_region, report, "out_of_region")
+    live = ~df["is_archive"].astype(bool)
+    df = _drop(df, live & (df["lat"].isna() | df["lon"].isna()), report, "no_location")
+    live = ~df["is_archive"].astype(bool)
+    in_box = pd.Series(
+        [
+            in_region(city, lat, lon)
+            for city, lat, lon in zip(df["city"], df["lat"], df["lon"], strict=True)
+        ],
+        index=df.index,
+    )
+    df = _drop(df, live & ~in_box, report, "out_of_region")
     title = df["title"].astype("str").str.strip().str.lower()
     df = _drop(df, title.str.startswith(_WANTED_PREFIXES), report, "wanted_ad")
     # Per-term totals would train as monthly prices with inflated targets, so the rule

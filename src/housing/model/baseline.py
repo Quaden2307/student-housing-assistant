@@ -184,6 +184,11 @@ def main(argv: list[str] | None = None) -> int:
         "--db", type=Path, default=None, help="database file (default: data/housing.db)"
     )
     parser.add_argument("--splits", type=int, default=5, help="grouped CV folds (default 5)")
+    parser.add_argument(
+        "--archive",
+        action="store_true",
+        help="also train on the Wayback archive rows (docs/decisions.md 2026-11-06)",
+    )
     args = parser.parse_args(argv)
 
     # housing.db.connect applies the per-connection conventions (foreign keys, WAL,
@@ -191,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     # already because this CLI reads and never migrates.
     conn = connect(args.db)
     try:
-        df, report = load_training(conn)
+        df, report = load_training(conn, include_archive=args.archive)
     finally:
         conn.close()
     print(report)

@@ -53,10 +53,13 @@ and November as January sublets are posted.
 
 Mark's proposals from `context.md` that change the contracts: `sqft`, `bathroom_private` and a
 takeover flag as schema fields (today they live in `listing_attributes`, so nothing is lost
-either way), the `archive_listings` table, and whether archived ad pages may be used as
-deflated training rows (recommended: as an experiment only). The deployment target for the
-app and whether a slim export of listings and predictions may be committed are Sprint 4
-questions.
+either way). The deployment target for the app and whether a slim export of listings and
+predictions may be committed are Sprint 4 questions.
+
+*Settled since:* the `archive_listings` table shipped with the 2026-10-23 merge, and archive
+rows may train, opt-in via `--archive`, since 2026-11-06 (time-split caveat recorded in
+`docs/decisions.md`). The 2026-11-06 expansion added Guelph, Hamilton and London to the daily
+sweep toward Caden's 10,000-listing target.
 
 ## Working agreements
 
