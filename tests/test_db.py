@@ -110,6 +110,7 @@ def test_creates_exactly_the_contract_and_auxiliary_tables(conn):
         "archive_captures",
         "archive_sightings",
         "archive_listings",
+        "archive_units",
     )
 
 
@@ -140,7 +141,7 @@ def test_primary_keys(conn):
 def test_migrate_is_idempotent_and_records_version(conn):
     insert_listing(conn)
     assert migrate(conn) == SCHEMA_VERSION
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
     assert table_names(conn) == sorted((*TABLES, *AUX_TABLES))
     assert conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 1
 
@@ -162,8 +163,8 @@ def test_migrate_v4_dedupes_snapshots_and_makes_insert_snapshot_an_upsert(tmp_pa
         )
     conn.commit()
 
-    assert migrate(conn) == 4
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert migrate(conn) == SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     rows = conn.execute("SELECT id, price FROM snapshots").fetchall()
     assert len(rows) == 1 and rows[0]["price"] == 800.0  # the first row of each pair wins
     # A re-sighting at the same scraped_at now updates in place instead of raising.

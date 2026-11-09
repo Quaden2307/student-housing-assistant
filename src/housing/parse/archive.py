@@ -23,34 +23,52 @@ is parsed. Formats seen in 2014 to 2026 captures:
   Prices only in the HTML and no posting dates. Not parsed yet, and its body is not
   stored: its descriptions carry contact details that :func:`scrub_page` cannot reach.
 - ``unknown``: anything else (a redirect page, an error page, a new layout).
+
+Archived **ad pages** (one listing each, ``/v-.../<ad id>``) have their own formats:
+
+- ``nextjs_ad``: today's ad page (seen from mid-2025). Parsed by the live
+  :func:`housing.parse.kijiji.parse_detail`; stored scrubbed by :func:`scrub_page`.
+- ``vip_legacy``: the older ad page (2024 to early 2025), whose data sits in a
+  ``window.__data`` blob under ``viewItemPage.viewItemData``. It carries the poster's
+  first name and has no first-posting date, only the last bump. Its raw page is **not**
+  stored: :func:`scrub_ad_capture` keeps only the fields we use, with contact details
+  stripped, as a JSON extract that :func:`parse_ad_capture` reads back.
+- ``removed``: the ad URL redirected to a search page (the ad was taken down).
 """
 
 from __future__ import annotations
 
+import dataclasses
+import html as html_lib
+import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 from housing.parse.kijiji import (
     BASE_URL,
     NEXT_DATA_RE,
+    DetailPage,
     IndexCard,
     ParseError,
     apollo_state,
+    parse_detail,
     parse_index,
 )
 from housing.parse.pii import (
     EMAIL_RE,
     OBFUSCATED_EMAIL_RE,
     REDACTED,
+    encode_next_data,
     redact_url,
     scrub_page,
     strip_contact_info,
 )
 
 FORMATS = ("nextjs", "nextjs_v2", "classic", "classic_v0", "html_cards", "unknown")
+AD_FORMATS = ("nextjs_ad", "vip_legacy", "removed", "unknown")
 
 _DROPPED_RE = re.compile(r"<!-- archive-format: (\w+); body not stored -->")
 _SEARCH_ITEM_RE = re.compile(r'class="[^"]*\bsearch-item\b')
@@ -497,3 +515,184 @@ def _scrub_classic(html: str) -> str:
             img["alt"] = clean
     out = str(soup)
     return OBFUSCATED_EMAIL_RE.sub(REDACTED, EMAIL_RE.sub(REDACTED, out))
+
+
+# --- ad pages ------------------------------------------------------------------------------
+
+_LEGACY_RE = re.compile(r"window\.__data\s*=\s*")
+_EXTRACT_RE = re.compile(r"<!-- archive-format: (\w+); extract -->\n")
+_TAG_RE = re.compile(r"<[^>]+>")
+_SURNAME_AFTER_REMOVED = re.compile(r"\[removed\][ \t]+[A-Z][\w'-]+")
+
+
+def detect_ad_format(html: str) -> str:
+    """Return which of :data:`AD_FORMATS` an archived ad page (or a stored copy) is in."""
+    stored = _EXTRACT_RE.match(html) or _DROPPED_RE.search(html[:500])
+    if stored:
+        return stored.group(1)
+    if NEXT_DATA_RE.search(html):
+        try:
+            root = apollo_state(html).get("ROOT_QUERY") or {}
+        except ParseError:
+            return "unknown"
+        if any(k.startswith("listing(") for k in root):
+            return "nextjs_ad"
+        if any(k.startswith("searchResultsPageByUrl:") for k in root):
+            return "removed"
+        return "unknown"
+    if _legacy_blob(html) is not None:
+        return "vip_legacy"
+    return "unknown"
+
+
+def scrub_ad_capture(html: str) -> str:
+    """Make an archived ad page safe to store.
+
+    ``nextjs_ad`` pages go through the live :func:`scrub_page`. ``vip_legacy`` pages are
+    replaced by an extract of the fields we use (title and description stripped of
+    contact details; the poster's name and phone are never read), so the parse can be
+    repeated without keeping personal data. Anything else becomes a one-line marker.
+    """
+    fmt = detect_ad_format(html)
+    if fmt == "nextjs_ad":
+        return _scrub_nextjs_ad(html)
+    if fmt == "vip_legacy":
+        detail = _legacy_detail(html)
+        seller = str((_legacy_blob(html) or {}).get("sellerName") or "")
+        fields = dataclasses.asdict(detail)
+        fields["title"] = _without_name(strip_contact_info(detail.title) or "", seller)
+        fields["description"] = _without_name(strip_contact_info(detail.description) or "", seller)
+        return f"<!-- archive-format: {fmt}; extract -->\n{json.dumps(fields, sort_keys=True)}\n"
+    return f"<!-- archive-format: {fmt}; body not stored -->\n"
+
+
+def parse_ad_capture(text: str) -> tuple[str, DetailPage | None]:
+    """Parse an archived ad page, or a stored copy of one.
+
+    Returns:
+        The format and the parsed page; the page is ``None`` for ``removed``.
+
+    Raises:
+        UnsupportedFormat: ``unknown``.
+        ParseError: A known format whose contents do not have the expected shape.
+    """
+    fmt = detect_ad_format(text)
+    if fmt == "nextjs_ad":
+        return fmt, parse_detail(text)
+    if fmt == "removed":
+        return fmt, None
+    if fmt == "vip_legacy":
+        extract = _EXTRACT_RE.match(text)
+        if extract:
+            return fmt, DetailPage(**json.loads(text[extract.end() :]))
+        return fmt, _legacy_detail(text)
+    raise UnsupportedFormat(fmt)
+
+
+def _scrub_nextjs_ad(html: str) -> str:
+    """:func:`scrub_page`, plus the poster's name wherever it starts a line, and surnames.
+
+    ``scrub_page`` replaces the profile name with a word-boundary regex over the raw
+    page. Inside the JSON a line break is escaped as a backslash and the letter n, so a
+    name that starts a line ("Thanks!!", blank line, "Alex Smith") follows a letter and
+    is never matched. Here the names are also removed from the decoded titles and descriptions,
+    where line breaks are real, together with a capitalised surname after them.
+    """
+    state = apollo_state(html)
+    names = [
+        str(entity["name"])
+        for key, entity in state.items()
+        if key.startswith("StandardProfileV2:") and isinstance(entity, dict) and entity.get("name")
+    ]
+    scrubbed = scrub_page(html)
+    match = NEXT_DATA_RE.search(scrubbed)
+    data = json.loads(match.group(1))
+    entities = data["props"]["pageProps"]["__APOLLO_STATE__"].values()
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        for field in ("title", "description"):
+            if isinstance(entity.get(field), str):
+                text = entity[field]
+                for name in names:
+                    text = _without_name(text, name)
+                entity[field] = _SURNAME_AFTER_REMOVED.sub("[removed]", text)
+    scrubbed = scrubbed[: match.start(1)] + encode_next_data(data) + scrubbed[match.end(1) :]
+    return _SURNAME_AFTER_REMOVED.sub("[removed]", scrubbed)
+
+
+def _without_name(text: str, name: str) -> str:
+    """Remove the poster's name from ``text``, with a capitalised surname right after it.
+
+    The page gives the poster's display name, so it can be removed wherever it appears:
+    descriptions are often signed off with the full name on a line of its own after a
+    blank line ("Thanks!!", blank line, "First Last"), which :func:`strip_contact_info`
+    does not catch.
+    """
+    name = name.strip()
+    if len(name) < 3:
+        return text
+    return re.sub(rf"\b{re.escape(name)}\b(?:[ \t]+[A-Z][\w'-]+)?", "[removed]", text)
+
+
+def _legacy_blob(html: str) -> dict | None:
+    match = _LEGACY_RE.search(html)
+    if not match:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html, match.end())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    ad = (data.get("viewItemPage") or {}).get("viewItemData")
+    return ad if isinstance(ad, dict) and ad.get("adId") else None
+
+
+def _epoch_ms(value: object) -> str | None:
+    if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+        return None
+    return datetime.fromtimestamp(value / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _legacy_detail(html: str) -> DetailPage:
+    """Map a ``vip_legacy`` blob onto :class:`DetailPage`. Poster name and phone are not read."""
+    ad = _legacy_blob(html)
+    if ad is None:
+        raise ParseError("no window.__data viewItemData in page")
+    price = ad.get("price") or {}
+    amount = price.get("amount")
+    location = ad.get("adLocation") or {}
+    url = ad.get("seoUrl")
+    attributes = {
+        a["machineKey"]: [str(a["machineValue"])]
+        for a in (ad.get("adAttributes") or {}).get("attributes") or []
+        if isinstance(a, dict) and a.get("machineKey") and a.get("machineValue") is not None
+    }
+    # Descriptions sometimes carry <br> and other markup; keep the text only.
+    description = html_lib.unescape(_TAG_RE.sub("\n", ad.get("description") or ""))
+    description = re.sub(r"\n{3,}", "\n\n", description).strip()
+    category = ad.get("categoryId")
+    return DetailPage(
+        source_id=str(ad["adId"]),
+        url=url.split("?")[0] if url else None,
+        title=html_lib.unescape(ad.get("title") or "").strip(),
+        description=description,
+        price=amount / 100 if isinstance(amount, int | float) else None,
+        price_type=price.get("type"),
+        address_text=location.get("mapAddress") or None,
+        lat=location.get("latitude"),
+        lon=location.get("longitude"),
+        show_pin=None,
+        # This layout has no first-posting date: sortingDate is the last bump, and it is
+        # also the "Posted" date the page displays.
+        activation_date=None,
+        sorting_date=_epoch_ms(ad.get("sortingDate")),
+        end_date=None,
+        status=None,
+        category_id=int(category) if str(category or "").isdigit() else None,
+        image_count=len(ad.get("media") or []),
+        poster_id=str(ad["posterId"]) if ad.get("posterId") is not None else None,
+        views=None,
+        attributes=attributes,
+    )

@@ -6,12 +6,23 @@ import pytest
 
 from housing.parse.archive import (
     UnsupportedFormat,
+    detect_ad_format,
     detect_format,
+    parse_ad_capture,
     parse_capture,
+    scrub_ad_capture,
     scrub_capture,
 )
 from housing.parse.pii import EMAIL_RE, OBFUSCATED_EMAIL_RE, strip_contact_info
-from tests.archive_pages import ad, html_cards_page, nextjs_page, v2_page
+from tests.archive_pages import (
+    ad,
+    html_cards_page,
+    nextjs_ad_page,
+    nextjs_page,
+    removed_ad_page,
+    v2_page,
+    vip_legacy_page,
+)
 from tests.helpers import load
 
 # The five classic-era fixtures: real Wayback captures, scrubbed before they were saved.
@@ -334,3 +345,71 @@ def test_unknown_layouts_still_raise_unsupported():
     with pytest.raises(UnsupportedFormat) as info:
         parse_capture("<html><body>nothing to see</body></html>", "2020-01-01T00:00:00Z")
     assert info.value.format == "unknown"
+
+
+# --- ad pages ------------------------------------------------------------------------------
+
+PERSONAL = ("Alex", "Smith", "519-555-0199", "5195550199", "alex.smith@example.com")
+
+
+@pytest.mark.parametrize(
+    ("html", "fmt"),
+    [
+        (nextjs_ad_page(1), "nextjs_ad"),
+        (vip_legacy_page(1), "vip_legacy"),
+        (removed_ad_page(), "removed"),
+        ("<html><body>Wayback Machine has not archived that URL.</body></html>", "unknown"),
+        ('<html><script>window.__data = {"homepage": {}};</script></html>', "unknown"),
+    ],
+)
+def test_detect_ad_format(html, fmt):
+    assert detect_ad_format(html) == fmt
+
+
+def test_todays_ad_page_is_stored_scrubbed_and_parsed_by_the_live_parser():
+    stored = scrub_ad_capture(nextjs_ad_page(11, 800, show_pin=False))
+    for word in PERSONAL:
+        assert word not in stored, word
+    fmt, ad = parse_ad_capture(stored)
+    assert fmt == "nextjs_ad"
+    assert (ad.source_id, ad.price, ad.show_pin) == ("11", 800.0, False)
+    assert ad.activation_date == "2025-08-12T10:00:00Z"
+    assert "January - April 2027" in ad.description
+
+
+def test_legacy_ad_page_is_stored_as_an_extract_without_personal_data():
+    page = vip_legacy_page(22, 900)
+    stored = scrub_ad_capture(page)
+    assert stored.startswith("<!-- archive-format: vip_legacy; extract -->")
+    for word in (*PERSONAL, "sellerName"):
+        assert word not in stored, word
+    assert detect_ad_format(stored) == "vip_legacy"
+
+    fmt, ad = parse_ad_capture(stored)
+    assert fmt == "vip_legacy"
+    assert (ad.source_id, ad.price, ad.category_id) == ("22", 900.0, 36)
+    assert ad.title == "Room 22 & more"  # HTML entities decoded
+    assert ad.url == "https://www.kijiji.ca/v-room-rental-roommate/kitchener-waterloo/room/22"
+    assert ad.activation_date is None  # this layout has no first-posting date
+    assert ad.sorting_date == "2024-12-08T18:58:32Z"
+    assert ad.attributes == {"furnished": ["1"], "petsallowed": ["limited"]}
+    assert (ad.poster_id, ad.image_count, ad.lat) == ("67337130", 2, 43.47195)
+    assert "<br>" not in ad.description and "5 bedroom house" in ad.description
+
+
+def test_legacy_extract_parses_like_the_raw_page():
+    page = vip_legacy_page(23, description="Plain room, no contact details here.")
+    raw = parse_ad_capture(page)[1]
+    stored = parse_ad_capture(scrub_ad_capture(page))[1]
+    assert raw == stored
+
+
+def test_a_removed_ad_parses_to_nothing():
+    assert parse_ad_capture(removed_ad_page()) == ("removed", None)
+
+
+def test_unknown_ad_pages_are_not_stored():
+    stored = scrub_ad_capture("<html>Call Alex at 519-555-0199</html>")
+    assert "519" not in stored and "Alex" not in stored
+    with pytest.raises(UnsupportedFormat):
+        parse_ad_capture(stored)

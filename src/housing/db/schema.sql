@@ -90,10 +90,13 @@ CREATE TABLE IF NOT EXISTS archive_captures (
   timestamp TEXT NOT NULL,         -- Wayback's 14-digit capture time, UTC
   original TEXT NOT NULL,          -- the archived Kijiji URL
   category TEXT NOT NULL,          -- 'apartments' or 'rooms'
-  page INTEGER NOT NULL,
+  page INTEGER NOT NULL,           -- index page number; 0 for an ad page
+  kind TEXT NOT NULL DEFAULT 'index',  -- 'index' (a page of cards) or 'ad' (one ad's page)
   captured_at TEXT NOT NULL,       -- the same time as ISO 8601 UTC
-  status TEXT NOT NULL,            -- 'pending', 'parsed', 'unsupported', 'failed'
-  format TEXT,                     -- 'nextjs', 'nextjs_v2', 'classic', 'classic_v0', 'html_cards', 'unknown'
+  status TEXT NOT NULL,            -- 'pending', 'parsed', 'unsupported', 'removed', 'failed'
+  format TEXT,                     -- index: 'nextjs', 'nextjs_v2', 'classic', 'classic_v0',
+                                   -- 'html_cards'; ad: 'nextjs_ad', 'vip_legacy';
+                                   -- either: 'removed', 'unknown'
   cards INTEGER,
   total_count INTEGER,             -- Kijiji's own listing count for the category then
   raw_path TEXT,
@@ -119,9 +122,11 @@ CREATE TABLE IF NOT EXISTS archive_listings (
   category TEXT,
   url TEXT,
   title TEXT,                      -- contact details stripped
+  description TEXT,                -- full text from an ad page, contact details stripped
   address_text TEXT,
   lat REAL, lon REAL,              -- null for 2024-era captures, which carry no coordinates
-  posted_at TEXT,                  -- Kijiji activationDate (first posting), YYYY-MM-DD
+  posted_at TEXT,                  -- Kijiji activationDate (first posting), YYYY-MM-DD; null
+                                   -- for 'vip_legacy' ad pages, which carry only the last bump
   first_seen TEXT NOT NULL,        -- earliest capture showing the ad
   last_seen TEXT NOT NULL,         -- latest capture showing the ad
   sightings INTEGER NOT NULL DEFAULT 0,
@@ -134,4 +139,18 @@ CREATE TABLE IF NOT EXISTS archive_listings (
   in_live INTEGER NOT NULL DEFAULT 0, -- 1 if the daily sweep has the same ad id
   neighbourhood TEXT,              -- postal prefix (FSA) found in address_text
   intersection TEXT                -- nearest intersection, when the card shows one
+);
+
+-- The unit schema fields (HANDOFF section 3) for each archived ad, from the live
+-- extraction rules (housing.parse.units.extract) applied to the archived title,
+-- description and attributes. Rewritten on every backfill run, like units.
+CREATE TABLE IF NOT EXISTS archive_units (
+  source_id TEXT PRIMARY KEY REFERENCES archive_listings(source_id),
+  unit_type TEXT, bedrooms INTEGER, bathrooms REAL,
+  lease_term TEXT, move_in_month INTEGER,
+  utilities_included INTEGER, furnished INTEGER, laundry_in_unit INTEGER,
+  building_type TEXT, year_built_after_2018 INTEGER,
+  extracted_by TEXT,               -- 'page_attrs' or 'regex', as in units
+  extracted_at TEXT,
+  flags TEXT                       -- JSON: the text_* flags (is_takeover, bathroom_private, ...)
 );
