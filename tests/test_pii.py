@@ -2,8 +2,16 @@ import json
 
 import pytest
 
-from housing.parse.kijiji import next_data
-from housing.parse.pii import REDACTED, hash_id, redact_url, scrub_page, strip_contact_info
+from housing.parse.kijiji import next_data, parse_detail
+from housing.parse.pii import (
+    REDACTED,
+    encode_next_data,
+    hash_id,
+    redact_url,
+    scrub_page,
+    strip_contact_info,
+)
+from tests.helpers import load
 
 
 def test_strips_emails_and_phone_formats():
@@ -126,6 +134,73 @@ def test_scrub_page_removes_profile_name_phone_and_contact_text():
         "<b>now</b>"
     )
     assert scrub_page("<html>no data</html>") == "<html>no data</html>"
+
+
+def _detail_page(description, poster_name, outside=""):
+    """A minimal detail page: one listing and the poster's profile, plus HTML after the JSON."""
+    state = {
+        "StandardListing:2": {"id": "2", "title": "Room near UW", "description": description},
+        "StandardProfileV2:1": {"id": "1", "name": poster_name},
+    }
+    return (
+        '<html><script id="__NEXT_DATA__" type="application/json">'
+        + encode_next_data({"props": {"pageProps": {"__APOLLO_STATE__": state}}})
+        + f"</script>{outside}</html>"
+    )
+
+
+def _description(html):
+    return next_data(html)["props"]["pageProps"]["__APOLLO_STATE__"]["StandardListing:2"][
+        "description"
+    ]
+
+
+def test_sign_off_after_repeated_punctuation_and_a_blank_line():
+    assert strip_contact_info("Thanks!!\n\nJames Smith") == f"Thanks!!\n\n{REDACTED}"
+    assert strip_contact_info("Cheers...\nJames Smith") == f"Cheers...\n{REDACTED}"
+    assert strip_contact_info("Thanks!! for reading") == "Thanks!! for reading"
+
+
+def test_surname_after_a_removed_name_is_removed_too():
+    assert strip_contact_info("Ask [removed] Smith about it") == "Ask [removed] about it"
+    assert strip_contact_info("Ask [removed] O'Brien.") == "Ask [removed]."
+    assert strip_contact_info("Contact [removed] Today") == "Contact [removed] Today"
+
+
+def test_scrub_page_removes_poster_name_at_the_start_of_a_line():
+    # In the JSON a line break is the two characters "\n", so "\nAlex" has no word boundary.
+    out = scrub_page(_detail_page("Nice room.\n\nAlex Smith", "Alex"))
+    assert "Alex" not in out and "Smith" not in out
+    assert _description(out) == "Nice room.\n\n[removed]"
+
+
+def test_scrub_page_removes_poster_name_after_escaped_html_and_its_surname():
+    # "<" is escaped as "\u003c", so "<b>Alex" is "\u003cb\u003eAlex" in the raw page.
+    out = scrub_page(_detail_page("<b>Alex</b> or ask Alex Smith about it", "Alex"))
+    assert "Alex" not in out and "Smith" not in out
+    assert _description(out) == "<b>[removed]</b> or ask [removed] about it"
+
+
+def test_scrub_page_removes_surnames_left_by_an_earlier_scrub():
+    # A page scrubbed before the surname rule: its profile name is already gone.
+    out = scrub_page(
+        _detail_page("Ask [removed] Smith about it", "[removed]", "<p>[removed] Smith</p>")
+    )
+    assert "Smith" not in out and _description(out) == "Ask [removed] about it"
+
+
+def test_scrub_page_removes_poster_name_from_every_copy_on_a_real_page():
+    # Kijiji repeats the description in ld+json blocks (JSON-escaped too), meta tags and the
+    # rendered body; the name must go from all of them, not only from __NEXT_DATA__.
+    html = load("kijiji_detail_rooms_2026-10-14.html.gz")
+    end = "Minimum 12-month lease."
+    html = html.replace(end + '"', end + '\\n\\nAlex Smith"')
+    html = html.replace(end + "</div>", end + "\nAlex Smith</div>")
+    html = html.replace('"name":"[removed]"', '"name":"Alex"')
+    assert html.count("Alex Smith") >= 3
+    out = scrub_page(html)
+    assert "Alex" not in out and "Smith" not in out
+    assert parse_detail(out).description.endswith(end + "\n\n[removed]")
 
 
 def test_hash_id_needs_a_salt_and_depends_on_it(monkeypatch):

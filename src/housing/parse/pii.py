@@ -5,8 +5,8 @@ digits, spaced digits or spelled-out digits) and the names that follow contact p
 replaced with a marker before anything is stored. Names are found by a narrow rule, not a
 language model: the capitalised words right after "contact", "call", "text", "ask for",
 "my name is" and the usual sign-offs ("Thanks, Sam"). The poster's profile name on Kijiji is
-never read at all, and :func:`scrub_page` removes it from a whole page before the raw copy
-is written under ``data/raw``.
+never read at all, and :func:`scrub_page` removes it, with a surname right after it, from a
+whole page before the raw copy is written under ``data/raw``.
 """
 
 from __future__ import annotations
@@ -66,11 +66,25 @@ NAME_AFTER_PHRASE_RE = re.compile(
     rf"(\b(?i:contact|call|text|message|reach|e-?mail|whatsapp|ask for|speak (?:to|with)|"
     rf"talk to|my name is|my name's)\s+)({_NAME}(?:\s*(?:or|and|&|/)\s*{_NAME})?)"
 )
+# Any run of punctuation after the sign-off word: "Thanks!!", "Cheers...", then the name on
+# the same line or a later one ("Thanks!!", blank line, "James Smith").
 SIGNOFF_RE = re.compile(
     rf"(\b(?i:thanks|thank you|many thanks|regards|best regards|kind regards|warm regards|"
-    rf"cheers|sincerely|best)[,!.]?\s*[-–—]?\s*)({_NAME})(?=\s*(?:$|[.!,]))",
+    rf"cheers|sincerely|best)[,!.]*\s*[-–—]?\s*)({_NAME})(?=\s*(?:$|[.!,]))",
     re.MULTILINE,
 )
+# What scrub_page puts in place of the poster's profile name.
+REMOVED_NAME = "[removed]"
+# A capitalised word right after a removed name is taken as the surname: "[removed] Smith",
+# "[removed] O'Brien". Contact words stay ("Contact [removed] Today").
+SURNAME_AFTER_REMOVED_RE = re.compile(
+    rf"{re.escape(REMOVED_NAME)}[ \t]+(?!(?i:{_NOT_A_NAME})\b)[A-Z][\w'’-]+"
+)
+# Where a poster's name may start in a raw page. Inside JSON strings (``__NEXT_DATA__`` and
+# the ld+json copies of the description) a line break is the two characters "\n" and "<" is
+# "\u003c", so a name at the start of a line or after a tag follows a letter or digit and
+# ``\b`` alone never matches there.
+_NAME_START = r"(?:\b|(?<=\\[nrt])|(?<=\\u[0-9a-fA-F]{4}))"
 NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
 )
@@ -112,6 +126,7 @@ def strip_contact_info(text: str | None) -> str | None:
     out = LOCAL_PHONE_RE.sub(_redact_local, out)
     out = NAME_AFTER_PHRASE_RE.sub(_redact_group(2), out)
     out = SIGNOFF_RE.sub(_redact_group(2), out)
+    out = SURNAME_AFTER_REMOVED_RE.sub(REMOVED_NAME, out)
     return out
 
 
@@ -143,8 +158,12 @@ def scrub_page(html: str) -> str:
 
     Inside ``__NEXT_DATA__`` every poster profile name becomes ``[removed]``, every
     ``posterInfo.phoneNumber`` becomes null, and listing titles and descriptions go through
-    :func:`strip_contact_info`. The profile name is also removed from the server-rendered
-    HTML around the JSON. A page without a parseable ``__NEXT_DATA__`` is returned as is.
+    :func:`strip_contact_info`. The profile name is then removed from the whole page, which
+    repeats the description in ld+json blocks, meta tags and the rendered body: inside JSON
+    strings too, where a name at the start of a line follows an escaped line break. A
+    capitalised word right after a removed name goes with it as the surname, including
+    ``[removed] Smith`` left by an earlier scrub. A page without a parseable
+    ``__NEXT_DATA__`` is returned as is.
     """
     match = NEXT_DATA_RE.search(html)
     if not match:
@@ -160,7 +179,7 @@ def scrub_page(html: str) -> str:
             continue
         if key.startswith("StandardProfileV2:") and entity.get("name"):
             names.append(str(entity["name"]))
-            entity["name"] = "[removed]"
+            entity["name"] = REMOVED_NAME
         poster = entity.get("posterInfo")
         if isinstance(poster, dict) and "phoneNumber" in poster:
             poster["phoneNumber"] = None
@@ -169,9 +188,9 @@ def scrub_page(html: str) -> str:
                 entity[field] = strip_contact_info(entity[field])
     html = html[: match.start(1)] + encode_next_data(data) + html[match.end(1) :]
     for name in names:
-        if len(name) >= 3:
-            html = re.sub(rf"\b{re.escape(name)}\b", "[removed]", html)
-    return html
+        if len(name) >= 3 and name != REMOVED_NAME:
+            html = re.sub(rf"{_NAME_START}{re.escape(name)}\b", REMOVED_NAME, html)
+    return SURNAME_AFTER_REMOVED_RE.sub(REMOVED_NAME, html)
 
 
 def encode_next_data(data: dict) -> str:
