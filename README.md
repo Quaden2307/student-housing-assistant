@@ -10,10 +10,13 @@ Decisions are logged in `docs/decisions.md`.
 
 ## Status
 
-Nov 6, 2026: the daily sweep now covers four Ontario university markets — Kitchener-Waterloo,
-Guelph, Hamilton and London — toward a 10,000-listing target, and the Wayback archive rows
-(9,316 past ads, 2014 to 2026) can opt into training with `--archive`, which takes the clean
-table from ~2,200 rows to ~10,250. The pipeline rides out laptop sleep and network flaps
+Nov 8, 2026: the daily sweep covers four Ontario university markets — Kitchener-Waterloo,
+Guelph, Hamilton and London — toward a 10,000-listing target (7,199 listings so far), and
+the Wayback archive rows (9,316 past ads, 2014 to 2026) can opt into training with
+`--archive`, which takes the clean table from ~5,500 rows to ~13,500. The Wayback lane can
+now also capture individual archived ad pages (full descriptions, stored scrubbed; schema
+v5 adds `archive_units`), and `housing.scrape.rescrub` re-applies the newest PII rules to
+raw pages already on disk. The pipeline rides out laptop sleep and network flaps
 (in-process caffeinate, sleep-aware retries, one bounded retry pass per sweep) and assigns
 dedup keys itself. Baselines on the live-only table: median lookup MAE $160, ridge $142 on
 grouped cross-validation. `docs/architecture.md` is the system map; `docs/pipeline.md` has
@@ -35,6 +38,7 @@ uv run python -m housing.parse.extract --all   # re-run the unit-field rules
 uv run python -m housing.features.build        # rebuild derived features
 uv run python -m housing.features.dedup        # assign dedup keys (the daily run does this too)
 uv run python -m housing.scrape.backfill --summary   # state of the Wayback archive
+uv run python -m housing.scrape.rescrub --dry-run     # re-apply current PII rules to stored raw pages (drop --dry-run to write)
 uv run python -m housing.model.baseline        # clean-table size and baseline errors; --archive adds the Wayback rows
 sh scripts/install_launchd.sh            # schedule the daily run at 06:30 on this Mac
 uv run pytest                            # tests

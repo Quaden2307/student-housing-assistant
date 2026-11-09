@@ -11,6 +11,7 @@ from housing.model.dataset import (
     TARGET,
     load_training,
 )
+from housing.scrape.backfill import extract_units
 
 # The Sprint 2 training-frame contract, written out by hand on purpose: if the module
 # drifts, this test must fail rather than drift with it.
@@ -448,6 +449,7 @@ def _add_archive(
     *,
     category="apartments",
     title="2 bed apartment",
+    description=None,
     price=1200.0,
     first_seen="2014-07-11T00:00:00Z",
     last_seen="2014-08-11T00:00:00Z",
@@ -456,13 +458,14 @@ def _add_archive(
     neighbourhood=None,
 ):
     conn.execute(
-        "INSERT INTO archive_listings (source_id, category, title, first_seen, last_seen,"
-        " sightings, last_price, attributes, in_live, neighbourhood)"
-        " VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        "INSERT INTO archive_listings (source_id, category, title, description, first_seen,"
+        " last_seen, sightings, last_price, attributes, in_live, neighbourhood)"
+        " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
         (
             source_id,
             category,
             title,
+            description,
             first_seen,
             last_seen,
             price,
@@ -471,6 +474,8 @@ def _add_archive(
             neighbourhood,
         ),
     )
+    # The training frame reads archive_units, which the backfill materializes.
+    extract_units(conn)
 
 
 def test_archive_rows_are_ignored_by_default(tmp_path):
@@ -514,3 +519,22 @@ def test_archive_rows_join_training_with_listing_year(tmp_path):
     assert room["unit_type"] == "room" and room["price_per_bedroom"] == 550.0
     live = df[~df["is_archive"]]
     assert list(live["listing_id"]) == [1]
+
+
+def test_archived_ad_page_descriptions_feed_the_unit_extraction(tmp_path):
+    conn = connect(tmp_path / "arc2.db")
+    migrate(conn)
+    _add(conn, 1)
+    _add_archive(
+        conn,
+        "900005",
+        category="rooms",
+        title="Room for rent",
+        description="Fully furnished room, all utilities included. Private bathroom.",
+        price=600.0,
+        attributes="{}",
+    )
+    df, _ = load_training(conn, include_archive=True)
+    row = df[df["dedup_key"] == "archive:900005"].iloc[0]
+    assert bool(row["furnished"]) and bool(row["utilities_included"])
+    assert bool(row["bathroom_private"])

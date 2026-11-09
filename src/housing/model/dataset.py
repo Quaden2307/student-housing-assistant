@@ -25,7 +25,6 @@ from housing.geo.distances import walk_laurier_min, walk_uw_min
 from housing.geo.ion_stops import nearest_ion_stop
 from housing.geo.regions import REGIONS, in_region
 from housing.parse.kijiji import LOCATION
-from housing.parse.units import extract as extract_unit
 
 TARGET = "price_per_bedroom"
 """The model target (HANDOFF section 3). Never a model input."""
@@ -251,24 +250,29 @@ def _empty_frame() -> pd.DataFrame:
 
 
 _ARCHIVE_QUERY = """
-SELECT source_id, category, title, address_text, lat, lon,
-       first_seen, last_seen, last_price, attributes, neighbourhood
-FROM archive_listings
-WHERE in_live = 0 AND last_price IS NOT NULL
+SELECT l.source_id, l.category, l.title, l.description, l.lat, l.lon,
+       l.first_seen, l.last_seen, l.last_price, l.attributes, l.neighbourhood,
+       u.unit_type, u.bedrooms, u.bathrooms, u.lease_term, u.move_in_month,
+       u.utilities_included, u.furnished, u.laundry_in_unit, u.building_type,
+       u.year_built_after_2018, u.flags
+FROM archive_listings l JOIN archive_units u USING (source_id)
+WHERE l.in_live = 0 AND l.last_price IS NOT NULL
 """
 
 
 def _archive_frame(conn: sqlite3.Connection) -> pd.DataFrame:
     """The Wayback archive rows shaped like the live query's output, before cleaning.
 
-    Each row re-runs the live pipeline's unit extraction
-    (:func:`housing.parse.units.extract`) over the stored attribute JSON and the title,
-    so an archive row's bedrooms, unit type and booleans mean exactly what a live row's
-    do. Ads the live sweep also has (``in_live = 1``) and ads without a price are
-    excluded up front. ``listing_id`` is a negative ordinal: these rows live in
-    ``archive_listings``, not ``listings``, and a negative id can never collide with a
-    real listing id in one frame. Every archive row is Kitchener-Waterloo; the lane
-    only backfills the KW index pages.
+    Unit fields come from ``archive_units``, which the backfill rewrites from the live
+    extraction rules on every run (over the title, the ad page's description when one
+    was captured, and the stored attributes), exactly as live rows read ``units``. An
+    ad the backfill has not extracted yet has no row here, so run
+    ``housing.scrape.backfill --rebuild`` once after a schema upgrade. Ads the live
+    sweep also has (``in_live = 1``) and ads without a price are excluded up front.
+    ``listing_id`` is a negative ordinal: these rows live in ``archive_listings``, not
+    ``listings``, and a negative id can never collide with a real listing id in one
+    frame. Every archive row is Kitchener-Waterloo; the lane only backfills the KW
+    pages.
     """
     rows = []
     for ordinal, row in enumerate(conn.execute(_ARCHIVE_QUERY), start=1):
@@ -276,7 +280,7 @@ def _archive_frame(conn: sqlite3.Connection) -> pd.DataFrame:
             source_id,
             category,
             title,
-            address,
+            description,
             lat,
             lon,
             first_seen,
@@ -284,50 +288,58 @@ def _archive_frame(conn: sqlite3.Connection) -> pd.DataFrame:
             price,
             attributes_json,
             neighbourhood,
+            unit_type,
+            bedrooms,
+            bathrooms,
+            lease_term,
+            move_in_month,
+            utilities_included,
+            furnished,
+            laundry_in_unit,
+            building_type,
+            year_built_after_2018,
+            flags_json,
         ) = row
         try:
             raw = json.loads(attributes_json) if attributes_json else {}
         except ValueError:
             raw = {}
         attrs = {name: "|".join(str(v) for v in values) for name, values in raw.items()}
-        unit = extract_unit(
-            category=category or "apartments",
-            title=title or "",
-            description=None,
-            attributes=attrs,
-            address=address,
-        )
+        try:
+            flags = json.loads(flags_json) if flags_json else {}
+        except ValueError:
+            flags = {}
         in_kw = REGIONS[LOCATION].contains(lat, lon)
         rows.append(
             {
                 "listing_id": -ordinal,
                 "dedup_key": f"archive:{source_id}",
                 "title": title,
-                "description": None,
+                "description": description,
                 "lat": lat,
                 "lon": lon,
                 "first_seen": first_seen,
                 "last_seen": last_seen,
                 "price": price,
-                "unit_type": unit.unit_type,
-                "bedrooms": unit.bedrooms,
-                "bathrooms": unit.bathrooms,
-                "lease_term": unit.lease_term,
-                "move_in_month": unit.move_in_month,
-                "utilities_included": unit.utilities_included,
-                "furnished": unit.furnished,
-                "laundry_in_unit": unit.laundry_in_unit,
-                "building_type": unit.building_type,
-                "year_built_after_2018": unit.year_built_after_2018,
+                "unit_type": unit_type,
+                "bedrooms": bedrooms,
+                "bathrooms": bathrooms,
+                "lease_term": lease_term,
+                "move_in_month": move_in_month,
+                "utilities_included": utilities_included,
+                "furnished": furnished,
+                "laundry_in_unit": laundry_in_unit,
+                "building_type": building_type,
+                "year_built_after_2018": year_built_after_2018,
                 "walk_uw_min": walk_uw_min(lat, lon) if in_kw else None,
                 "walk_laurier_min": walk_laurier_min(lat, lon) if in_kw else None,
                 "ion_distance_m": nearest_ion_stop(lat, lon)[1] if in_kw else None,
                 "neighbourhood": neighbourhood,
                 "areainfeet": attrs.get("areainfeet"),
                 "landlord_type": attrs.get("forrentbyhousing"),
-                "bathroom_private": unit.flags.get("bathroom_private"),
-                "is_takeover": unit.flags.get("is_takeover"),
-                "internet_included": unit.flags.get("internet_included"),
+                "bathroom_private": flags.get("text_bathroom_private"),
+                "is_takeover": flags.get("text_is_takeover"),
+                "internet_included": flags.get("text_internet_included"),
                 "category": category,
                 "location": LOCATION,
                 "is_archive": True,
@@ -381,9 +393,10 @@ def load_training(
         dedup: Keep one row per dedup key (the default for training). Pass
             False to keep every surviving ad, e.g. for the EDA notebook.
         include_archive: Also load the Wayback archive rows as training rows
-            (docs/decisions.md 2026-11-06; off by default). Archive rows are
-            index-card data only: no walk times for most, no description, and
-            prices from their own era, which is why ``listing_year`` is a model
+            (docs/decisions.md 2026-11-06; off by default). Archive rows carry
+            index-card data, plus the full description when an archived ad page
+            was captured; most have no walk times, and prices are from their
+            own era, which is why ``listing_year`` is a model
             input. Ads the live sweep also has (``in_live = 1``) are excluded,
             and the location rules are waived for archive rows because their
             provenance (the KW index pages) already fixes the market.

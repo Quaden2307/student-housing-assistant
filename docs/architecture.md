@@ -21,9 +21,10 @@ Four lanes feed one SQLite file, `data/housing.db`:
    launchd job. Fully automated: sweeps, gone-marking, detail pages, extraction, dedup,
    features, Discord report. Each listing's market is stored as the `location` attribute;
    the product remains a Waterloo fair-price check — the extra markets feed the model.
-2. **Wayback backfill** — archived captures of the same index pages, 2014 to 2026, into the
-   separate `archive_*` tables (9,316 unique past ads; see `docs/sources.md` section 7). Built;
-   run manually, paced at one request per 15 to 20 seconds for archive.org.
+2. **Wayback backfill** — archived captures of the same index pages, 2014 to 2026, and of
+   individual ad pages (full descriptions, stored scrubbed), into the separate `archive_*`
+   tables (9,316 unique past ads; see `docs/sources.md` section 7). Built; run manually,
+   paced at one request per 15 to 20 seconds for archive.org.
 3. **Manual-entry form** — planned: a form writing rows with `source = 'manual'` so team
    members can capture Facebook-group listings by reading them as humans.
 4. **Reference data** — hardcoded: campus coordinates, the 19 ION LRT stations (from GTFS),
@@ -57,9 +58,10 @@ Everything the pipeline depends on lives in `src/housing/`; notebooks only impor
 | `housing.scrape.kijiji` | The live sweep (`sweep`) and the detail-page pass (`fetch_details`), with partial-stats semantics |
 | `housing.scrape.daily` | Orchestrates the whole daily run in order, grades the exit code, builds the report |
 | `housing.scrape.wayback` | Wayback CDX API client: list the archived captures of a URL pattern |
-| `housing.scrape.backfill` | The archive lane: inventory, paced download, re-parse, summary of `archive_*` |
+| `housing.scrape.backfill` | The archive lane: inventory, paced download, re-parse, `archive_units` extraction, summary of `archive_*` |
+| `housing.scrape.rescrub` | Re-applies the current PII rules to stored raw pages (`--dry-run`, `--backup`) |
 | `housing.parse.kijiji` | Parses live index and detail pages from the embedded `__NEXT_DATA__` JSON |
-| `housing.parse.archive` | Classifies archived pages into five layout eras and parses or scrubs each |
+| `housing.parse.archive` | Classifies archived index pages into five layout eras and ad pages into two, and parses or scrubs each |
 | `housing.parse.units` | Maps attributes plus title/description text to the section 3 unit fields |
 | `housing.parse.extract` | Runs the unit extraction over the database into `units` and `text_*` flags |
 | `housing.parse.pii` | The privacy rule: contact stripping, whole-page scrubbing, URL redaction, salted poster-id hashing |
@@ -116,12 +118,16 @@ auxiliary tables added by logged decisions:
 - **listing_attributes** — every raw source attribute plus our own flags (`category`,
   `poster_hash`, `detail_*` bookkeeping, `text_*` extraction flags), one row per
   `(listing_id, name)`.
-- **archive_captures** — the backfill's work queue: one row per archived index page with
-  status, format, provenance.
+- **archive_captures** — the backfill's work queue: one row per archived page with status,
+  format and provenance; `kind` says whether it is an index page or one ad's page.
 - **archive_sightings** — one row per ad per capture, the archive's snapshots.
 - **archive_listings** — one row per past ad however many captures show it, with first/last
-  price and the version 4 columns `neighbourhood` (postal prefix from the address) and
-  `intersection` (classic and v2 cards carry one).
+  price, the version 4 columns `neighbourhood` (postal prefix from the address) and
+  `intersection` (classic and v2 cards carry one), and the version 5 `description` (full ad
+  text when an ad page was captured, contact-stripped).
+- **archive_units** — the section 3 unit fields per archived ad, rewritten by
+  `backfill.extract_units` on every run from the live extraction rules; the training
+  frame's archive rows read these, exactly as live rows read `units`.
 
 ```mermaid
 erDiagram
@@ -132,6 +138,7 @@ erDiagram
     listings ||--o{ listing_attributes : "name-value"
     archive_captures ||--o{ archive_sightings : "ads on the page"
     archive_listings ||--o{ archive_sightings : "joined by source_id"
+    archive_listings ||--o| archive_units : "one per ad"
     listings |o..o| archive_listings : "in_live by source_id"
 ```
 
@@ -146,15 +153,18 @@ Who writes what:
 | `predictions` | nothing yet |
 | `listing_attributes` | `scrape.kijiji` (card and detail attributes), `parse.extract` (`text_*` flags) |
 | `archive_captures` | `scrape.backfill` (inventory and per-capture status) |
-| `archive_sightings` | `scrape.backfill.record_cards` |
-| `archive_listings` | `scrape.backfill` (`record_cards`, `refresh_listings`) |
+| `archive_sightings` | `scrape.backfill` (`record_cards`, `record_ad`) |
+| `archive_listings` | `scrape.backfill` (`record_cards`, `record_ad`, `refresh_listings`) |
+| `archive_units` | `scrape.backfill.extract_units` (drop and rebuild, like `units`) |
 
 Schema versions (`PRAGMA user_version`, history in `housing.db.migrate`): **1** the five
 section 5 tables (2026-10-04); **2** adds `listing_attributes` (2026-10-14); **3** adds the
 Wayback `archive_*` tables (2026-10-16); **4** snapshots unique per `(listing_id, scraped_at)`
 with a one-time dedupe, and `archive_listings` gains `neighbourhood` and `intersection`
-(2026-11-03). The contract DDL stays byte-identical; the unique index and the guarded `ALTER`s
-live in `migrate.py`.
+(2026-11-03); **5** archived ad pages: `archive_captures.kind`, `archive_listings.description`
+and `archive_units` (2026-11-08) — run `backfill --rebuild` (or any backfill run) once after
+upgrading so `archive_units` fills. The contract DDL stays byte-identical; the unique index
+and the guarded `ALTER`s live in `migrate.py`.
 
 **Archive-live link.** `archive_listings.in_live` is set to 1 by
 `backfill.refresh_listings` when the daily sweep has the same Kijiji ad id, so the two sources
