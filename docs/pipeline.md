@@ -9,7 +9,7 @@ contract; `docs/decisions.md` records every call made here; `docs/architecture.m
 | Lane | What | Cadence | State |
 |---|---|---|---|
 | 1. Current | Kijiji index sweep over four markets (Kitchener-Waterloo, Guelph, Hamilton, London since 2026-11-06), both categories each, through the embedded page JSON; detail pages for the full text; everything below | Daily, 06:30 via launchd | Built |
-| 2. Historical | Wayback captures of the same index pages (2014 to 2026), and of individual ad pages for their full descriptions, into separate `archive_*` tables, for a monthly price index. Mark's lane | Manual runs, paced at one request per 15 to 20 s | Built: 9,316 past ads spanning 2014 to 2026 (ad-page downloads not started); see `docs/sources.md` section 7 |
+| 2. Historical | Wayback captures of the same index pages (2014 to 2026), and of individual ad pages for their full descriptions, into separate `archive_*` tables, for a monthly price index. Mark's lane | Manual runs, paced at one request per 15 to 20 s | Built: 9,600+ past ads spanning 2014 to 2026; ad-page downloads underway since 2026-11-10 (2014-2017 pages are an unsupported layout pending a parser); see `docs/sources.md` section 7 |
 | 3. Manual | A Google Form for Facebook-group listings read by people, written with `source = 'manual'` | Ongoing | Planned |
 | 4. Reference | Campus coordinates, ION stations (hardcoded from GTFS), CMHC and asking-rent anchors for sanity checks | Once | Built where needed |
 

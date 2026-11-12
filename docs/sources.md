@@ -226,6 +226,20 @@ $758 (2026); apartments $925 (2014), $1,112 (2017), $1,904 (2022), $2,150 (2024)
 those cells as indicative. The old `### Backfill results (2026-10-23)` snapshot below this
 line described the 2024-only first run.
 
+### Ad-page results (updated 2026-11-11; downloads started 2026-11-10)
+
+`--inventory --ads both --since 2014` queued 2,796 archived individual ad pages (1,648
+apartments, 1,148 rooms, 2014 to 2026). Two paced download runs so far (one killed mid-run,
+one stopped by the three-failures-in-a-row guard during an archive.org slow patch — both
+resume cleanly): 567 ads parsed with full descriptions (541 archive-only with a price, so
+training-eligible), roughly 1,600 captures still pending. The modern formats parse as
+designed (`nextjs_ad` from 2023 on, `vip_legacy` 2017 to 2022). Finding: the ~580 captures
+from 2014 to 2017 are an older ad layout that predates `window.__data` and came back
+`unknown`; by the privacy rule those bodies are stored only as a one-line marker, so
+unlocking old-era descriptions needs a new parser format **and** a re-download of those
+captures afterward (about three hours at pace). Twelve failures: Wayback 404s for
+CDX-advertised captures plus read timeouts, all benign.
+
 ### First run (2026-10-23)
 
 The merged backfill (`uv run python -m housing.scrape.backfill`) queued 105 supported captures
