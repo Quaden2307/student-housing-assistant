@@ -11,6 +11,7 @@ from housing.model.lgbm import (
     fit_predict_lgbm,
     haversine_m_vec,
     learn_categories,
+    range_coverage,
     to_lgbm_frame,
 )
 from tests.test_baseline import make_frame
@@ -133,3 +134,57 @@ def test_unfitted_model_raises():
 def test_haversine_matches_one_degree_of_latitude():
     d = haversine_m_vec(43.0, -80.0, np.array([44.0]), np.array([-80.0]))
     assert d[0] == pytest.approx(111_195, rel=1e-3)
+
+
+def mixed_noise_frame(n=600, seed=1):
+    """Rooms with wide noise (sd 0.25 in log), 2-beds with narrow noise (sd 0.05)."""
+    rng = np.random.default_rng(seed)
+    unit_type = [["room", "2bed"][i % 2] for i in range(n)]
+    base = {"room": 800.0, "2bed": 1100.0}
+    sd = {"room": 0.25, "2bed": 0.05}
+    target = [base[u] * float(np.exp(rng.normal(0, sd[u]))) for u in unit_type]
+    return make_frame(n, target=target, unit_type=unit_type)
+
+
+def test_per_type_ranges_are_wider_for_noisier_groups():
+    model = PriceModel(params=SMALL).fit(mixed_noise_frame())
+    room_lo, room_hi = model.interval("room")
+    bed_lo, bed_hi = model.interval("2bed")
+    assert room_hi - room_lo > 2 * (bed_hi - bed_lo)
+    assert model.calibration("room")[0] == "room"
+    assert model.calibration("2bed")[0] == "2bed"
+
+
+def test_small_groups_and_unknown_types_fall_back_to_the_shared_range():
+    df = mixed_noise_frame()
+    df.loc[df.index[:20], "unit_type"] = "studio"  # 20 rows: under MIN_GROUP_RESIDUALS
+    model = PriceModel(params=SMALL).fit(df)
+    assert model.calibration("studio")[0] == "all"
+    assert model.calibration(None)[0] == "all"
+    assert model.calibration("castle")[0] == "all"
+
+
+def test_same_gap_reads_differently_for_a_room_and_a_2bed():
+    df = mixed_noise_frame()
+    model = PriceModel(params=SMALL).fit(df)
+    room = df[df.unit_type == "room"].iloc[[0]]
+    bed = df[df.unit_type == "2bed"].iloc[[0]]
+    (r,) = model.verdict(room, [float(model.predict(room)[0]) * 1.15])
+    (b,) = model.verdict(bed, [float(model.predict(bed)[0]) * 1.15])
+    assert b.price_percentile > 95 and r.price_percentile < 80
+    assert r.range_group == "room" and b.range_group == "2bed"
+    assert (r.range_high / r.expected) > (b.range_high / b.expected)
+
+
+def test_shared_range_mode_matches_v1():
+    model = PriceModel(params=SMALL, per_type_ranges=False).fit(mixed_noise_frame())
+    assert model.calibration("room")[0] == "all"
+    assert model.interval("room") == model.interval("2bed")
+
+
+def test_range_coverage_reports_every_group_and_overall():
+    df = mixed_noise_frame()
+    table = range_coverage(df.iloc[:400], df.iloc[400:])
+    assert set(table.index) == {"room", "2bed", "overall"}
+    assert table.loc["overall", "n"] == 200
+    assert 0.6 < table.loc["overall", "coverage"] < 0.95

@@ -9,10 +9,14 @@ turns one prediction into the section 2 output: expected price, the 10th to 90th
 percentile range, the asking price's percentile, the band, the gap, the top three drivers
 and a confidence block.
 
-The range and percentile are v1 as HANDOFF describes it: the empirical distribution of
-out-of-fold log residuals from grouped cross-validation, the same for every unit. Section
-2's margin rule is applied: a gap no larger than the held-out MAE is ``FAIR`` and flagged
-``within_margin``, whatever its percentile.
+The range and percentile come from the empirical distribution of out-of-fold log
+residuals from grouped cross-validation (HANDOFF section 7, v1), calibrated separately per
+unit-type group (Mondrian conformal prediction): rooms are far less predictable than
+apartments, and one shared range was too narrow for rooms and too wide for 2-bedrooms.
+Groups are ``RANGE_GROUPS``; a group with fewer than ``MIN_GROUP_RESIDUALS`` held-out rows
+falls back to the shared range. ``per_type_ranges=False`` restores the single range.
+Section 2's margin rule is applied: a gap no larger than the held-out MAE is ``FAIR`` and
+flagged ``within_margin``, whatever its percentile.
 
 On macOS LightGBM needs OpenMP: ``brew install libomp``.
 """
@@ -40,6 +44,28 @@ from housing.model.labels import attach_titles, fix_labels
 # Section 2 thresholds on price_percentile; tuned after calibration.
 GOOD_DEAL_MAX = 25.0
 OVERPRICED_MIN = 75.0
+# Unit types calibrated together. Studios (about 70 archive rows) share the 1-bed range and
+# houses share the 3+ bedroom range: each group needs enough held-out rows for a stable 10th
+# and 90th percentile.
+RANGE_GROUPS: dict[str, str] = {
+    "room": "room",
+    "studio": "studio_1bed",
+    "1bed": "studio_1bed",
+    "2bed": "2bed",
+    "3plus": "3plus_house",
+    "house": "3plus_house",
+}
+SHARED_GROUP = "all"
+MIN_GROUP_RESIDUALS = 100
+
+
+def range_group(unit_type: object) -> str:
+    """The calibration group for a unit type (``SHARED_GROUP`` when unknown)."""
+    if unit_type is None or pd.isna(unit_type):
+        return SHARED_GROUP
+    return RANGE_GROUPS.get(str(unit_type), SHARED_GROUP)
+
+
 # Section 2 confidence: similar listings within this radius; fewer than OOD_MIN is OOD.
 SIMILAR_RADIUS_M = 1500.0
 OOD_MIN = 10
@@ -139,6 +165,7 @@ class Verdict:
     expected: float
     range_low: float
     range_high: float
+    range_group: str
     asking: float
     price_percentile: float
     band: str
@@ -162,13 +189,17 @@ class PriceModel:
     Attributes:
         params: LightGBM parameters (``DEFAULT_PARAMS`` unless overridden).
         n_splits: Grouped CV folds used to collect out-of-fold residuals.
+        per_type_ranges: Calibrate the range and percentile per ``RANGE_GROUPS`` group
+            (default) instead of one shared distribution.
     """
 
     params: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_PARAMS))
     n_splits: int = 5
+    per_type_ranges: bool = True
     booster: lgb.LGBMRegressor | None = None
     categories: dict[str, list[str]] = field(default_factory=dict)
     residuals: np.ndarray = field(default_factory=lambda: np.empty(0))
+    residuals_by_group: dict[str, np.ndarray] = field(default_factory=dict)
     oof_pred: np.ndarray = field(default_factory=lambda: np.empty(0))
     mae: float = float("nan")
     mape: float = float("nan")
@@ -196,7 +227,14 @@ class PriceModel:
             model, cats = _fit_booster(df.iloc[train_idx], self.params)
             oof[test_idx] = model.predict(to_lgbm_frame(df.iloc[test_idx], cats))
         self.oof_pred = np.exp(oof)
-        self.residuals = np.sort(np.log(y) - oof)
+        resid = np.log(y) - oof
+        self.residuals = np.sort(resid)
+        groups = np.array([range_group(u) for u in df["unit_type"]])
+        self.residuals_by_group = {
+            g: np.sort(resid[groups == g])
+            for g in np.unique(groups)
+            if g != SHARED_GROUP and (groups == g).sum() >= MIN_GROUP_RESIDUALS
+        }
         held_out = score(y, np.exp(oof))
         self.mae, self.mape = held_out.mae, held_out.mape
         self.booster, self.categories = _fit_booster(df, self.params)
@@ -214,13 +252,28 @@ class PriceModel:
         booster = self._check_fitted()
         return np.exp(booster.predict(to_lgbm_frame(x, self.categories)))
 
-    def percentile(self, log_gap: float) -> float:
-        """Share of held-out residuals at or below ``log(asking / expected)``, 0 to 100."""
-        return (
-            float(np.searchsorted(self.residuals, log_gap, side="right"))
-            / len(self.residuals)
-            * 100.0
-        )
+    def calibration(self, unit_type: object = None) -> tuple[str, np.ndarray]:
+        """The calibration group and its sorted held-out log residuals for a unit type.
+
+        Falls back to the shared distribution when per-type ranges are off, the unit type
+        is unknown, or its group had fewer than ``MIN_GROUP_RESIDUALS`` held-out rows.
+        """
+        group = range_group(unit_type)
+        by_group = getattr(self, "residuals_by_group", {})  # models saved before v1.1
+        if getattr(self, "per_type_ranges", False) and group in by_group:
+            return group, by_group[group]
+        return SHARED_GROUP, self.residuals
+
+    def interval(self, unit_type: object = None) -> tuple[float, float]:
+        """The 10th and 90th percentile log residuals for a unit type's group."""
+        _, resid = self.calibration(unit_type)
+        lo, hi = np.quantile(resid, [0.10, 0.90])
+        return float(lo), float(hi)
+
+    def percentile(self, log_gap: float, unit_type: object = None) -> float:
+        """Share of the group's held-out residuals at or below ``log(asking / expected)``."""
+        _, resid = self.calibration(unit_type)
+        return float(np.searchsorted(resid, log_gap, side="right")) / len(resid) * 100.0
 
     def similar_count(self, row: pd.Series) -> int | None:
         """Training listings of the same unit type within 1.5 km; None without coordinates."""
@@ -284,12 +337,14 @@ class PriceModel:
         """
         asking = np.asarray(asking, dtype=float)
         expected = self.predict(x)
-        lo, hi = np.quantile(self.residuals, [0.10, 0.90])
         all_drivers = self.drivers(x)
         verdicts = []
         for i in range(len(x)):
+            unit_type = x.iloc[i].get("unit_type")
+            group, _ = self.calibration(unit_type)
+            lo, hi = self.interval(unit_type)
             gap = asking[i] - expected[i]
-            pct = self.percentile(float(np.log(asking[i] / expected[i])))
+            pct = self.percentile(float(np.log(asking[i] / expected[i])), unit_type)
             within = abs(gap) <= self.mae
             if within or GOOD_DEAL_MAX < pct < OVERPRICED_MIN:
                 band = "FAIR"
@@ -303,6 +358,7 @@ class PriceModel:
                     expected=round(float(expected[i]), 2),
                     range_low=round(float(expected[i] * np.exp(lo)), 2),
                     range_high=round(float(expected[i] * np.exp(hi)), 2),
+                    range_group=group,
                     asking=float(asking[i]),
                     price_percentile=round(pct, 1),
                     band=band,
@@ -328,17 +384,52 @@ class PriceModel:
         return joblib.load(path)
 
 
-def range_coverage(train: pd.DataFrame, test: pd.DataFrame, n_splits: int = 5) -> float:
-    """Share of ``test`` asking prices inside the 10 to 90 range of a model fit on ``train``.
+def range_coverage(
+    train: pd.DataFrame, test: pd.DataFrame, n_splits: int = 5, *, per_type_ranges: bool = True
+) -> pd.DataFrame:
+    """Coverage of the 10 to 90 range on ``test`` for a model fit on ``train``, by group.
 
-    HANDOFF section 7 wants about 80 percent on held-out data.
+    HANDOFF section 7 wants about 80 percent on held-out data; with per-type ranges that
+    should hold in every group, not just on average.
+
+    Returns:
+        One row per calibration group plus ``"overall"``: ``n``, ``coverage`` (share inside
+        the range), ``below`` and ``above`` (shares under and over it), and
+        ``non_fair`` (share a verdict would band GOOD_DEAL or OVERPRICED).
     """
-    model = PriceModel(n_splits=n_splits).fit(train)
+    model = PriceModel(n_splits=n_splits, per_type_ranges=per_type_ranges).fit(train)
     expected = model.predict(test)
-    lo, hi = np.quantile(model.residuals, [0.10, 0.90])
     y = test[TARGET].to_numpy(dtype=float)
-    inside = (y >= expected * np.exp(lo)) & (y <= expected * np.exp(hi))
-    return float(inside.mean())
+    rows = []
+    for i, unit_type in enumerate(test["unit_type"]):
+        lo, hi = model.interval(unit_type)
+        log_gap = float(np.log(y[i] / expected[i]))
+        pct = model.percentile(log_gap, unit_type)
+        flagged = abs(y[i] - expected[i]) > model.mae and not (GOOD_DEAL_MAX < pct < OVERPRICED_MIN)
+        rows.append(
+            {
+                # Report by unit-type group either way, so both modes compare like for like.
+                "group": range_group(unit_type),
+                "below": log_gap < lo,
+                "above": log_gap > hi,
+                "non_fair": flagged,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    frame["inside"] = ~(frame["below"] | frame["above"])
+
+    def summary(part: pd.DataFrame) -> dict[str, float]:
+        return {
+            "n": len(part),
+            "coverage": part["inside"].mean(),
+            "below": part["below"].mean(),
+            "above": part["above"].mean(),
+            "non_fair": part["non_fair"].mean(),
+        }
+
+    table = {g: summary(part) for g, part in frame.groupby("group")}
+    table["overall"] = summary(frame)
+    return pd.DataFrame(table).T
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -404,13 +495,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{cv_text.removeprefix(f'{name}: '):<44} {time_text}  [{name}]")
 
     model = PriceModel(n_splits=args.splits).fit(df)
-    lo, hi = np.quantile(model.residuals, [0.10, 0.90])
-    print(
-        f"\nheld-out residual range (10th to 90th): {np.expm1(lo):+.1%} to {np.expm1(hi):+.1%}"
-        f" of expected; MAE ${model.mae:,.0f}, MAPE {model.mape:.1f}%"
-    )
+    print(f"\nheld-out MAE ${model.mae:,.0f}, MAPE {model.mape:.1f}%; 10th to 90th range by group:")
+    for group in [*sorted(model.residuals_by_group), SHARED_GROUP]:
+        resid = model.residuals_by_group.get(group, model.residuals)
+        lo, hi = np.quantile(resid, [0.10, 0.90])
+        print(f"  {group:<12} {np.expm1(lo):+.1%} to {np.expm1(hi):+.1%}  (n={len(resid)})")
     if split is not None:
-        print(f"10-90 range coverage on the time split: {range_coverage(*split):.1%} (target 80%)")
+        for label, per_type in (("one shared range", False), ("per-type ranges", True)):
+            table = range_coverage(*split, per_type_ranges=per_type)
+            print(f"\ntime-split range check, {label} (target: coverage 80% in every group):")
+            print(table.to_string(float_format=lambda v: f"{v:.2f}"))
 
     # Out-of-fold error by segment, from the predictions fit() collected.
     oof_pred = model.oof_pred
