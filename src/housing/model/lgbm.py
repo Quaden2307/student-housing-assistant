@@ -1,7 +1,7 @@
 """LightGBM price model, v1 (HANDOFF section 7): expected price plus a fairness verdict.
 
     uv run python -m housing.model.lgbm [--db data/housing.db] [--splits 5] [--archive]
-                                        [--save data/models/lgbm_v1.joblib]
+                                        [--save data/models/lgbm_v1.joblib] [--fix-labels]
 
 An experiment on its own branch, not the agreed model. It trains LightGBM on
 ``log(price_per_bedroom)`` with the same tier A inputs as the baselines (``FEATURES``), and
@@ -35,6 +35,7 @@ from housing.db import connect
 from housing.model.baseline import FEATURES, fit_predict_lookup, fit_predict_ridge
 from housing.model.dataset import BOOLEANS, CATEGORICALS, NUMERICS, load_training
 from housing.model.evaluate import GROUP, TARGET, grouped_cv, score, summarize, time_split
+from housing.model.labels import attach_titles, fix_labels
 
 # Section 2 thresholds on price_percentile; tuned after calibration.
 GOOD_DEAL_MAX = 25.0
@@ -358,14 +359,25 @@ def main(argv: list[str] | None = None) -> int:
         "--archive", action="store_true", help="also train on the Wayback archive rows"
     )
     parser.add_argument("--save", type=Path, default=None, help="write the fitted model here")
+    parser.add_argument(
+        "--fix-labels",
+        action="store_true",
+        help="relabel room / whole-unit mistakes from the title (housing.model.labels)",
+    )
     args = parser.parse_args(argv)
 
     conn = connect(args.db)
+    label_report = None
     try:
         df, report = load_training(conn, include_archive=args.archive)
+        if args.fix_labels and not df.empty:
+            df, label_report = fix_labels(attach_titles(conn, df))
+            df = df.drop(columns="title")
     finally:
         conn.close()
     print(report)
+    if label_report is not None:
+        print(label_report)
     if df.empty:
         print("no training rows after cleaning; nothing to evaluate")
         return 1
