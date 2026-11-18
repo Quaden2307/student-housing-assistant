@@ -9,8 +9,10 @@ from housing.model.lgbm import (
     OOD_MIN,
     PriceModel,
     fit_predict_lgbm,
+    grouped_cv_on,
     haversine_m_vec,
     learn_categories,
+    main,
     range_coverage,
     to_lgbm_frame,
 )
@@ -188,3 +190,22 @@ def test_range_coverage_reports_every_group_and_overall():
     assert set(table.index) == {"room", "2bed", "overall"}
     assert table.loc["overall", "n"] == 200
     assert 0.6 < table.loc["overall", "coverage"] < 0.95
+
+
+def test_grouped_cv_on_scores_only_the_masked_rows():
+    df = priced_frame()
+    mask = df["city"] == "kitchener-waterloo"
+    folds = grouped_cv_on(df, fit_predict_lgbm, mask, n_splits=5)
+    assert sum(m.n for m in folds) == int(mask.sum())
+    assert all(m.mae > 0 for m in folds)
+
+
+def test_main_reports_a_city_block_only_when_the_table_has_several_cities(tmp_path, capsys):
+    from housing.db import connect
+    from housing.db.migrate import migrate
+
+    conn = connect(tmp_path / "h.db")
+    migrate(conn)
+    conn.close()
+    assert main(["--db", str(tmp_path / "h.db")]) == 1  # empty table: nothing to score
+    assert "scored on" not in capsys.readouterr().out

@@ -38,7 +38,15 @@ from sklearn.model_selection import GroupKFold
 from housing.db import connect
 from housing.model.baseline import FEATURES, fit_predict_lookup, fit_predict_ridge
 from housing.model.dataset import BOOLEANS, CATEGORICALS, NUMERICS, load_training
-from housing.model.evaluate import GROUP, TARGET, grouped_cv, score, summarize, time_split
+from housing.model.evaluate import (
+    GROUP,
+    TARGET,
+    Metrics,
+    grouped_cv,
+    score,
+    summarize,
+    time_split,
+)
 from housing.model.labels import attach_titles, fix_labels
 
 # Section 2 thresholds on price_percentile; tuned after calibration.
@@ -432,6 +440,67 @@ def range_coverage(
     return pd.DataFrame(table).T
 
 
+def grouped_cv_on(
+    df: pd.DataFrame, fit_predict: Any, mask: pd.Series, n_splits: int = 5
+) -> list[Metrics]:
+    """Grouped CV that trains on every row but scores only the held-out rows in ``mask``.
+
+    The product checks Waterloo listings, while the training table also holds other cities
+    (docs/decisions.md 2026-11-06): those rows help train, and this scores the product.
+
+    Args:
+        df: Training table with ``dedup_key`` and the target.
+        fit_predict: CV callback, as for ``evaluate.grouped_cv``.
+        mask: Boolean series aligned with ``df``; True rows are scored.
+        n_splits: Requested fold count, lowered to the number of distinct keys.
+
+    Returns:
+        One ``Metrics`` per fold that held out at least one masked row.
+    """
+    n_groups = int(df[GROUP].nunique())
+    folds: list[Metrics] = []
+    for train_idx, test_idx in GroupKFold(n_splits=min(n_splits, n_groups)).split(
+        df, groups=df[GROUP]
+    ):
+        test = df.iloc[test_idx]
+        test = test[mask.iloc[test_idx].to_numpy()]
+        if test.empty:
+            continue
+        preds = np.asarray(fit_predict(df.iloc[train_idx], test), dtype=float)
+        folds.append(score(test[TARGET].to_numpy(dtype=float), preds))
+    return folds
+
+
+def _report_models(
+    df: pd.DataFrame,
+    split: tuple[pd.DataFrame, pd.DataFrame] | None,
+    n_splits: int,
+    mask: pd.Series | None = None,
+) -> None:
+    """Print grouped-CV and time-split errors for the three models, optionally on a subset."""
+    print(f"{f'grouped {n_splits}-fold CV':<44} time split")
+    for name, fit_predict in (
+        ("lookup", fit_predict_lookup),
+        ("ridge", fit_predict_ridge),
+        ("lightgbm", fit_predict_lgbm),
+    ):
+        folds = (
+            grouped_cv(df, fit_predict, n_splits=n_splits)
+            if mask is None
+            else grouped_cv_on(df, fit_predict, mask, n_splits=n_splits)
+        )
+        cv_text = summarize(name, folds)
+        time_text = ""
+        if split is not None:
+            train, test = split
+            if mask is not None:
+                test = test[mask.loc[test.index].to_numpy()]
+            if not test.empty:
+                preds = np.asarray(fit_predict(train, test), dtype=float)
+                time_text = str(score(test[TARGET].to_numpy(dtype=float), preds))
+        print(f"{cv_text.removeprefix(f'{name}: '):<44} {time_text}  [{name}]")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Compare LightGBM with both baselines, report calibration and errors, optionally save.
 
@@ -454,6 +523,11 @@ def main(argv: list[str] | None = None) -> int:
         "--fix-labels",
         action="store_true",
         help="relabel room / whole-unit mistakes from the title (housing.model.labels)",
+    )
+    parser.add_argument(
+        "--eval-city",
+        default="kitchener-waterloo",
+        help="also score only this city's rows when the table holds several (default: KW)",
     )
     args = parser.parse_args(argv)
 
@@ -480,19 +554,13 @@ def main(argv: list[str] | None = None) -> int:
         split = None
         print(f"time split skipped: {err}")
 
-    print(f"\n{f'grouped {args.splits}-fold CV':<44} time split")
-    for name, fit_predict in (
-        ("lookup", fit_predict_lookup),
-        ("ridge", fit_predict_ridge),
-        ("lightgbm", fit_predict_lgbm),
-    ):
-        cv_text = summarize(name, grouped_cv(df, fit_predict, n_splits=args.splits))
-        time_text = ""
-        if split is not None:
-            train, test = split
-            preds = np.asarray(fit_predict(train, test), dtype=float)
-            time_text = str(score(test[TARGET].to_numpy(dtype=float), preds))
-        print(f"{cv_text.removeprefix(f'{name}: '):<44} {time_text}  [{name}]")
+    print("\nall rows:")
+    _report_models(df, split, args.splits)
+    city_mask = df["city"] == args.eval_city
+    scored_city = bool(city_mask.any()) and not bool(city_mask.all())
+    if scored_city:
+        print(f"\nscored on {args.eval_city} only ({int(city_mask.sum())} rows; trained on all):")
+        _report_models(df, split, args.splits, city_mask)
 
     model = PriceModel(n_splits=args.splits).fit(df)
     print(f"\nheld-out MAE ${model.mae:,.0f}, MAPE {model.mape:.1f}%; 10th to 90th range by group:")
@@ -504,6 +572,12 @@ def main(argv: list[str] | None = None) -> int:
         for label, per_type in (("one shared range", False), ("per-type ranges", True)):
             table = range_coverage(*split, per_type_ranges=per_type)
             print(f"\ntime-split range check, {label} (target: coverage 80% in every group):")
+            print(table.to_string(float_format=lambda v: f"{v:.2f}"))
+        train, test = split
+        city_test = test[city_mask.loc[test.index].to_numpy()]
+        if scored_city and not city_test.empty:
+            table = range_coverage(train, city_test)
+            print(f"\ntime-split range check on {args.eval_city} only, per-type ranges:")
             print(table.to_string(float_format=lambda v: f"{v:.2f}"))
 
     # Out-of-fold error by segment, from the predictions fit() collected.
