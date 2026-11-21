@@ -97,6 +97,42 @@ def test_studio_and_basement_rules():
     assert list(fixed["unit_type"]) == ["studio", "room", "room"]
 
 
+@pytest.mark.parametrize(
+    ("unit_type", "price", "title"),
+    [
+        ("room", 390, "(wanting to rent a room)"),
+        ("room", 550, "Looking a Roomate"),
+        ("room", 600, "Christian guy looking for room rental."),
+        ("room", 975, "In search of roommate"),
+        ("room", 500, "Shared room in kitchener for male"),
+        ("room", 432, "Downtown Kitchener – Room Sharing Available!"),
+        ("room", 450, "Room for Rent in Sharing near Conestoga"),
+        ("room", 550, "Spot in a shared room"),
+        ("1bed", 375, "therapy/ counselling office for rent in Waterloo"),
+        ("studio", 3000, "Office Space for Lease – 541 Queen St, Kitchener!"),
+    ],
+)
+def test_ads_that_are_not_a_home_are_dropped(unit_type, price, title):
+    fixed, report = fix_labels(frame([(unit_type, 1, price, title)]))
+    assert report.dropped_not_a_home == 1 and fixed.empty
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Upper 2 bedroom or 1 plus den/office -- King & Rosedale",
+        "Room with private bathroom & office for rent",
+        "For rent - new 3 BR house with office in Kitchener",
+        "Room for rent near University of Waterloo",
+        "Roommate wanted - 3 Bed 1 Bath House w/Backyard",
+        "Private room in a shared house",
+    ],
+)
+def test_homes_that_mention_offices_or_sharing_stay(title):
+    _, report = fix_labels(frame([("room", None, 700, title)]))
+    assert report.dropped_not_a_home == 0
+
+
 def test_rows_without_title_are_left_alone():
     fixed, report = fix_labels(frame([("1bed", 1, 700, None)]))
     assert report.no_title == 1 and fixed.loc[0, "unit_type"] == "1bed"

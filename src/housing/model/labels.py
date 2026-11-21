@@ -66,6 +66,25 @@ WHOLE_UNIT_RE = re.compile(
 STUDIO_RE = re.compile(r"\b(?:studio|bachelor)\b")
 BASEMENT_RE = re.compile(r"\bbasement\b")
 
+# Ads that are not a rentable home at a per-bedroom price. Each priced far below its type in
+# the error review of Caden's 2026-11-18 data, so the model learned them as cheap rooms.
+# Someone looking for a place (the loader's wanted filter only checks the title's start).
+WANTED_RE = re.compile(
+    r"\b(?:wanting to rent|looking (?:for )?an? ?room+ate|in search of (?:an? )?room+ate"
+    r"|(?:i'?m |am |is |are |tenant |student |guy |girl |woman |man )looking for (?:an? )?"
+    r"(?:room|place|unit|apartment|house))"
+)
+# A bed in a bedroom shared with a stranger: a different product from a private room.
+SHARED_ROOM_RE = re.compile(
+    r"\b(?:shared (?:bed)?room|room[\s-]?sharing|sharing room|in sharing|spot in an? shared"
+    r"|bed in an? shared|share an? room)\b"
+)
+# Commercial space. "Den/office" and "office space" inside a home stay in.
+NON_RESIDENTIAL_RE = re.compile(
+    r"^(?!.*\b(?:bed\s?rooms?|beds?|br|rooms?|den|house|home|apartment|apt|condo)\b)"
+    r".*\b(?:office|commercial|retail|warehouse|clinic)\b"
+)
+
 _WORD_COUNTS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 WHOLE_UNIT_TYPES = ("studio", "1bed", "2bed", "3plus", "house")
 
@@ -80,6 +99,8 @@ class LabelReport:
         to_studio: Room rows relabelled ``studio``.
         dropped_basement_units: Room rows dropped as whole basement apartments with no
             bedroom count.
+        dropped_not_a_home: Rows dropped as wanted ads, beds in a shared bedroom, or
+            commercial space (rule 0).
         no_title: Rows with no title to read (left unchanged).
         examples: A few ``(old, new, title)`` tuples for the report.
     """
@@ -88,6 +109,7 @@ class LabelReport:
     to_unit: int = 0
     to_studio: int = 0
     dropped_basement_units: int = 0
+    dropped_not_a_home: int = 0
     no_title: int = 0
     examples: list[tuple[str, str, str]] = field(default_factory=list)
 
@@ -95,7 +117,8 @@ class LabelReport:
         return (
             f"label fixes: {self.to_room} whole-unit rows -> room, {self.to_unit} room rows ->"
             f" whole unit, {self.to_studio} room rows -> studio, dropped"
-            f" {self.dropped_basement_units} basement apartments with no bedroom count"
+            f" {self.dropped_basement_units} basement apartments with no bedroom count and"
+            f" {self.dropped_not_a_home} wanted / shared-room / commercial ads"
             f" ({self.no_title} rows had no title)"
         )
 
@@ -137,6 +160,9 @@ def fix_labels(df: pd.DataFrame) -> tuple[pd.DataFrame, LabelReport]:
 
     Rules, first match wins:
 
+    0. Any row whose title is a wanted ad (``WANTED_RE``), a bed in a shared bedroom
+       (``SHARED_ROOM_RE``) or commercial space (``NON_RESIDENTIAL_RE``) is dropped:
+       none is a home rented at a per-bedroom price the app scores.
     1. A whole-unit row whose title rents one room becomes ``room``, and its target
        becomes the asking price, since a room's price is per bedroom already.
        ``bedrooms`` is kept: for a room it means the unit's total. "Room in a ..." always
@@ -177,7 +203,11 @@ def fix_labels(df: pd.DataFrame) -> tuple[pd.DataFrame, LabelReport]:
         )
         price = float(row["price"])
         new = None
-        if unit_type in WHOLE_UNIT_TYPES and rents_a_room and price <= ROOM_MAX_PRICE:
+        if WANTED_RE.search(text) or SHARED_ROOM_RE.search(text) or NON_RESIDENTIAL_RE.search(text):
+            new = "dropped"
+            keep[idx] = False
+            report.dropped_not_a_home += 1
+        elif unit_type in WHOLE_UNIT_TYPES and rents_a_room and price <= ROOM_MAX_PRICE:
             new = "room"
             out.at[idx, "unit_type"] = "room"
             out.at[idx, TARGET] = price
