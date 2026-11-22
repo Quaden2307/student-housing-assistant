@@ -9,7 +9,7 @@ from housing.db.migrate import AUX_TABLES, SCHEMA_VERSION, TABLES, main, migrate
 
 # Column names and declared types, copied from HANDOFF.md section 5. If this
 # fails, either schema.sql drifted from the contract or the contract changed
-# and needs Caden's sign-off plus a line in docs/decisions.md.
+# and needs the project lead's sign-off plus a line in docs/decisions.md.
 EXPECTED_COLUMNS = {
     "listings": [
         ("id", "INTEGER"),

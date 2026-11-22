@@ -2,7 +2,7 @@
 #
 # The scraper, the text extractor, the form and the model all read this file through
 # housing.schema.load_schema(). If two of them disagree about what a field means, this
-# file settles it. Changing it needs Caden's sign-off and an entry in docs/decisions.md.
+# file settles it. Changing it needs the project lead's sign-off and an entry in docs/decisions.md.
 #
 # Asking price is deliberately NOT a schema field. It is the model target when training
 # and the value we compare against when scoring, so it travels separately from the unit

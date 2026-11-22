@@ -1,5 +1,5 @@
 -- Student Housing Assistant database. This is the DDL from HANDOFF.md section 5
--- and it is a contract: change it only with Caden's sign-off and a line in
+-- and it is a contract: change it only with the project lead's sign-off and a line in
 -- docs/decisions.md. Applied by `uv run python -m housing.db.migrate`; every
 -- statement uses IF NOT EXISTS so re-running it is harmless.
 --

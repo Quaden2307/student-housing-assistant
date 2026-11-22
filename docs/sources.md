@@ -9,7 +9,7 @@ saved gzipped under `data/raw/<source>/2026-10-14/`). Re-check robots.txt before
 
 | Source | Reachable with plain HTTP | robots.txt for our paths | Terms on scraping | Listing JSON | Verdict (Oct 14) |
 |---|---|---|---|---|---|
-| Kijiji KW (apartments c37, rooms c36) | Yes, all 8 requests 200, no bot wall | Index and detail paths allowed; query-string filters and `/rss-*` disallowed | Prohibits "robot, spider, scraper or other automated means ... without our express written permission" | `__NEXT_DATA__` with a normalized Apollo cache, plus ld+json | Primary source. Needs Caden's call on the Terms clause. |
+| Kijiji KW (apartments c37, rooms c36) | Yes, all 8 requests 200, no bot wall | Index and detail paths allowed; query-string filters and `/rss-*` disallowed | Prohibits "robot, spider, scraper or other automated means ... without our express written permission" | `__NEXT_DATA__` with a normalized Apollo cache, plus ld+json | Primary source. Needs the project lead's call on the Terms clause. |
 | rentals.ca | No: city page returns 403 Cloudflare managed challenge | `Allow: /`, but JSON feeds (`*-feed.json`), map `bbox=` and filter facets disallowed | Not read (page unreachable) | Unknown | Blocked for curl. Cheapest candidate if a browser-profile fallback is ever tried. |
 | Zumper | No: JavaScript "Client Challenge" even for robots.txt | Unknown | Not read | Unknown | Blocked. Drop unless a real need appears. |
 | Places4Students | No: HTTP 429 Vercel Security Checkpoint on robots.txt | Unknown | Not read; search-engine summary says scrapers need written permission | Unknown | Blocked. Drop. |
@@ -118,7 +118,7 @@ parse time per the privacy rule.
 Under "Using the Services", users agree not to "use any robot, spider, scraper or other automated means to
 access Kijiji and collect content for any purpose without our express written permission", not to "impose
 an unreasonable load on our infrastructure", and not to "harvest or otherwise collect information about
-others, including email addresses, without their consent". Decision on how to proceed: Caden's.
+others, including email addresses, without their consent". Decision on how to proceed: the project lead's.
 
 ### Anti-bot observations
 

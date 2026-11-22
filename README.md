@@ -12,7 +12,7 @@ Decisions are logged in `docs/decisions.md`.
 
 **Data.** The daily sweep covers four Ontario university markets — Kitchener-Waterloo
 (3,784 listings), Hamilton (2,587), London (2,223) and Guelph (560) — 9,154 in total
-against Caden's 10,000 target, backed by 132,335 snapshots. The Wayback lane holds 10,965
+against the 10,000-listing target, backed by 132,335 snapshots. The Wayback lane holds 10,965
 past ads (2014 to 2026) drawn from 3,260 captures, and 2,174 of the 2,796 inventoried ad
 pages have been downloaded and parsed for their full descriptions (stored scrubbed;
 schema v5 adds `archive_units`). Archive rows opt into training with `--archive`, which

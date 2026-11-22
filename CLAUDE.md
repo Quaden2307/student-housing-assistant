@@ -2,7 +2,7 @@
 
 A fair-price check for Waterloo student rentals: a model trained on scraped Kitchener-Waterloo listings predicts what a unit should rent for per bedroom, and a small app scores one listing against it.
 
-Read `HANDOFF.md` before doing anything. It holds the product contract (section 2), the unit schema (3), the data and blocking plan (4), the database schema (5), the layout and conventions (6), the modelling plan (7), the phase calendar (9), and this week's ordered tasks (10). Sections 2, 3 and 5 are contracts: don't change them without Caden's sign-off, and log changes in `docs/decisions.md`.
+Read `HANDOFF.md` before doing anything. It holds the product contract (section 2), the unit schema (3), the data and blocking plan (4), the database schema (5), the layout and conventions (6), the modelling plan (7), the phase calendar (9), and this week's ordered tasks (10). Sections 2, 3 and 5 are contracts: don't change them without the project lead's sign-off, and log changes in `docs/decisions.md`.
 
 ## Conventions
 

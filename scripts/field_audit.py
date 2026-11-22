@@ -143,7 +143,7 @@ def build(conn) -> str:
         "- Rooms are text: only price, location, posted dates and sometimes furnished are structured. After the",
         "  detail page is fetched the text rules fill bedrooms for less than half, because the house's bedroom",
         "  count is simply not stated in most room ads. For `unit_type = room` the model should treat `bedrooms`",
-        "  as optional (open question for Caden: section 3 lists it as required).",
+        "  as optional (open question for the project lead: section 3 lists it as required).",
         "- `building_type` is `unknown` for most apartments because nothing structured separates a low-rise from a",
         "  tower; the known-building registry catches the purpose-built student towers.",
         "- Prices need the cleaning rules in `docs/pipeline.md` section 4: a handful of ads carry placeholder",

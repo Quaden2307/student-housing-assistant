@@ -1,9 +1,9 @@
 # Student Housing Assistant: hand-off
 
-Project lead: Caden Sun (GitHub `Quaden2307`). UW Data Science Club project, Fall 2026, continuing into Winter 2027.
+A UW Data Science Club project, Fall 2026, continuing into Winter 2027.
 Status on Oct 4, 2026: nothing is built yet. This week's job is the repo, the database, and the first scrape.
 
-Read this whole file before writing code. Sections 2, 3 and 5 are contracts; change them only with Caden's sign-off and log the change in `docs/decisions.md`.
+Read this whole file before writing code. Sections 2, 3 and 5 are contracts; change them only with the project lead's sign-off and log the change in `docs/decisions.md`.
 
 ---
 
@@ -117,7 +117,7 @@ Rooms-only is thin (309 today). We model rooms and whole units together, with `u
 2. One of rentals.ca or Zumper for whole units. Both appear to serve listing data as JSON to their own front ends; verify before building a parser. *(Update Oct 14: both challenge-walled, dropped — see `docs/sources.md`.)*
 3. Places4Students for student rooms. Small, but it's the student-specific source. *(Update Oct 14: challenge-walled, dropped.)*
 4. Never Facebook or Instagram. A manual-entry form (Google Form writing to the schema) is how team members capture Facebook-group listings, by reading them as humans.
-5. *(Added Nov 6, Caden's sign-off, toward the 10,000-listing target:)* Kijiji in three more university markets — Guelph (`l1700242`), Hamilton (`l80014`), London (`l1700214`) — same categories, same footprint rules, swept daily alongside KW. The market is stored per listing as the `location` attribute; the product stays a Waterloo fair-price check and the extra markets feed the model (`docs/decisions.md` 2026-11-06).
+5. *(Added Nov 6, the project lead's sign-off, toward the 10,000-listing target:)* Kijiji in three more university markets — Guelph (`l1700242`), Hamilton (`l80014`), London (`l1700214`) — same categories, same footprint rules, swept daily alongside KW. The market is stored per listing as the `location` attribute; the product stays a Waterloo fair-price check and the extra markets feed the model (`docs/decisions.md` 2026-11-06).
 
 ### Blocking playbook
 
@@ -244,7 +244,7 @@ Conventions:
 - A Discord webhook posts "swept N listings, M new, K gone" after every run, and alerts on zero. A silently dead scraper is the usual way this kind of project dies.
 - Log every non-trivial decision in `docs/decisions.md` as date, decision, why.
 
-Dev environment: Caden's MacBook Pro (M1, 8 GB RAM). Keep memory light; pandas is fine at this size, no Spark. School H100s are available but only matter for the optional text model in Phase 2.
+Dev environment: a MacBook Pro (M1, 8 GB RAM). Keep memory light; pandas is fine at this size, no Spark. School H100s are available but only matter for the optional text model in Phase 2.
 
 ---
 
@@ -277,7 +277,7 @@ Not in scope now: accounts, saved searches, a browse-and-rank mode, alerts, mobi
 
 ## 9. Phases and checkpoints
 
-Caden's plan: Phase 1 data collection 1.5 months, Phase 2 model 1 month, Phase 3 UI 0.5 months. Mapped onto the calendar from Oct 5. Phases overlap: the EDA and baseline notebooks start as soon as there's data, and the eval harness is built during Phase 1 against `sample.csv`.
+The agreed plan: Phase 1 data collection 1.5 months, Phase 2 model 1 month, Phase 3 UI 0.5 months. Mapped onto the calendar from Oct 5. Phases overlap: the EDA and baseline notebooks start as soon as there's data, and the eval harness is built during Phase 1 against `sample.csv`.
 
 | Phase | Dates | Work | Checkpoint |
 |---|---|---|---|
@@ -312,7 +312,7 @@ Not this week: modelling, the app, geocoding beyond a smoke test, GitHub Actions
 
 ## 11. Rules for the agent
 
-Ask Caden before:
+Ask the project lead before:
 - Scraping any site not listed in section 4.
 - Adding a paid service or anything that needs a credit card.
 - Using proxies or browser automation beyond the Playwright fallback described above.
@@ -327,7 +327,7 @@ Never:
 - Count snapshots as training rows.
 
 Working style:
-- Code that Caden can read and extend: small modules, type hints, docstrings, no clever metaprogramming. He knows Python, pandas, XGBoost and PyTorch well and has built a scraping pipeline before (a flight-price predictor). Explain anything unusual in a comment.
+- Code the team can read and extend: small modules, type hints, docstrings, no clever metaprogramming. Assume a reader fluent in Python and pandas but new to this codebase. Explain anything unusual in a comment.
 - When a site blocks you, document it and move on. Two hours maximum per site.
 - When a design decision comes up that this file doesn't settle, make the call, log it in `docs/decisions.md`, and flag it in your summary.
 - Report at the end of each session: what works, the row count in `listings`, what's blocked, and what's next.
