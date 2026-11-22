@@ -293,21 +293,41 @@ Team: 5 to 6 people in three pairs (scraping and data; analysis and modelling; a
 
 ---
 
-## 10. This week, Oct 5 to 11: tasks in order
+## 10. This week, Nov 23 to 29: tasks in order
 
-1. Initialise the repo with the layout in section 6: `uv init`, `ruff`, `pytest`, `.gitignore` covering `data/raw/`, `data/housing.db`, `.env`. Push to GitHub.
-2. Write `schema/unit_schema.yaml` from section 3, and a tiny loader in `src/housing/schema.py` that the parser and form will import.
-3. `db/schema.sql` and `migrate.py` for the tables in section 5. Create `data/housing.db`.
-4. `scrape/fetch.py`: rate-limited GET with caching to `data/raw/`, robots.txt check, one User-Agent, retries with backoff, hard stop on 403.
-5. `scrape/kijiji.py` + `parse/kijiji.py`: sweep both category index pages (all pages, 40 listings each), parse title, price, location string, posted date, url, bedrooms if present, insert into `listings` and `snapshots`. Target: about 1,800 rows. Record the real count in `docs/sources.md`.
-6. Fetch 20 sample detail pages across both categories. Save five of them as fixtures. Write `docs/field_audit.md`: for every schema field, what fraction of the 20 have it, and where it lives (attributes block, embedded JSON, or only in the description text). This table decides what the schema really is.
-7. Parser tests against the fixtures.
-8. `scripts/wayback_count.py`: hit the CDX API for both index URLs, print capture counts by month, write the result to `docs/sources.md`.
-9. Spend at most one hour on a secondary source: find whether rentals.ca or Zumper exposes listing JSON for Waterloo, and note what you find in `docs/sources.md`.
-10. Commit `data/sample.csv` (100 parsed rows, PII stripped).
+Phase 2's checkpoint is met (LightGBM beats the baselines on held-out KW listings, range
+coverage measured, error analysis written). This week closes the gaps that work exposed and
+starts the handover to Phase 3.
 
-Not this week: modelling, the app, geocoding beyond a smoke test, GitHub Actions. Everything downstream depends on the field audit; building on fields that turn out to be empty is the main way to waste the first month.
+1. `brew install libomp` on every macOS checkout. Without it `import lightgbm` fails and
+   `uv run pytest` aborts during collection, so the whole suite is unrunnable, not just
+   `tests/test_lgbm.py`.
+2. Fix the extraction bugs behind the 1-bedroom error (`notebooks/03_error_analysis.ipynb`
+   section 5): bathroom counts of 2 to 6 on one-bedroom units, and `sqft` values near 100.
+   1-beds are 21.8 percent of rows but 44 percent of the worst misses; part of that is the
+   parser, not the model.
+3. Re-run `03_error_analysis.ipynb` with LightGBM's fit/predict passed to `oof()`, scored on
+   KW rows only. The open question is whether the tree model fixes the decile bias (ridge
+   over-predicts the cheapest tenth by $185 and under-predicts the dearest by $314). That
+   bias is the error a user actually sees.
+4. Close the extraction gaps that cost the most MAE when NULL: `utilities_included` (+$28.5,
+   and only 7.5 percent missing, so nearly free), `neighbourhood` (+$20.2), `landlord_type`
+   (+$20.2), `bathrooms` (+$17.8).
+5. Drop or re-derive `year_built_after_2018` (98.5 percent NULL) and `internet_included`
+   (90.1 percent). Neither carries usable signal today; both are schema section 3 fields, so
+   removing them needs a sign-off and a `docs/decisions.md` line.
+6. Re-run `notebooks/01_eda.ipynb`. Its outputs are from the 1,862-row table of Oct 24; the
+   clean table is now 6,595 rows live and its archive section predates the 2014 captures.
+7. Save a fitted model (`--save`) and write batch scores into `predictions`, which is still
+   empty. Phase 3's app reads that table.
+8. Add CI: `ruff check` and `pytest` on push. 434 tests currently run only when someone
+   remembers, and the fixture-test convention in section 6 is unenforced.
+9. Housekeeping: delete the five merged remote branches, and settle the deployment target
+   named as open in `docs/plan.md` before Phase 3 starts on Dec 16.
 
+Not this week: the Streamlit app itself, new data sources, and the optional text-embedding
+experiment. Exams land in the second half of Phase 2, so the model work that needs thinking
+should finish before December.
 ---
 
 ## 11. Rules for the agent
