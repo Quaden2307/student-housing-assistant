@@ -299,9 +299,10 @@ Phase 2's checkpoint is met (LightGBM beats the baselines on held-out KW listing
 coverage measured, error analysis written). This week closes the gaps that work exposed and
 starts the handover to Phase 3.
 
-1. `brew install libomp` on every macOS checkout. Without it `import lightgbm` fails and
-   `uv run pytest` aborts during collection, so the whole suite is unrunnable, not just
-   `tests/test_lgbm.py`.
+1. ~~`brew install libomp` on every macOS checkout~~ (done on the collection machine
+   2026-11-21). Without it `import lightgbm` fails and `uv run pytest` aborts during
+   collection, so the whole suite is unrunnable, not just `tests/test_lgbm.py`. Still
+   needed on every other macOS checkout.
 2. Fix the extraction bugs behind the 1-bedroom error (`notebooks/03_error_analysis.ipynb`
    section 5): bathroom counts of 2 to 6 on one-bedroom units, and `sqft` values near 100.
    1-beds are 21.8 percent of rows but 44 percent of the worst misses; part of that is the
@@ -318,8 +319,9 @@ starts the handover to Phase 3.
    removing them needs a sign-off and a `docs/decisions.md` line.
 6. Re-run `notebooks/01_eda.ipynb`. Its outputs are from the 1,862-row table of Oct 24; the
    clean table is now 6,595 rows live and its archive section predates the 2014 captures.
-7. Save a fitted model (`--save`) and write batch scores into `predictions`, which is still
-   empty. Phase 3's app reads that table.
+7. ~~Write batch scores into `predictions`~~ (done 2026-11-21: `housing.model.score`,
+   5,409 active listings). Remaining: call it from `scripts/sweep.py` so scores refresh
+   after every sweep, as HANDOFF section 8 specifies, rather than by hand.
 8. Add CI: `ruff check` and `pytest` on push. 434 tests currently run only when someone
    remembers, and the fixture-test convention in section 6 is unenforced.
 9. Housekeeping: delete the five merged remote branches, and settle the deployment target

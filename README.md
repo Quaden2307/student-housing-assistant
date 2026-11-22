@@ -66,6 +66,7 @@ uv run python -m housing.scrape.backfill --summary   # state of the Wayback arch
 uv run python -m housing.scrape.rescrub --dry-run     # re-apply current PII rules to stored raw pages (drop --dry-run to write)
 uv run python -m housing.model.baseline        # clean-table size and baseline errors; --archive adds the Wayback rows
 uv run python -m housing.model.lgbm            # the Phase 2 model; --eval-city scores one market, --fix-labels, --save
+uv run python -m housing.model.score           # batch-score active listings into predictions; --dry-run, --load, --save
 sh scripts/install_launchd.sh            # schedule the daily run at 06:30 on this Mac
 uv run pytest                            # tests
 uv run ruff check . && uv run ruff format --check .

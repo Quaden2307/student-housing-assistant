@@ -332,19 +332,27 @@ class PriceModel:
             )
         return out
 
-    def verdict(self, x: pd.DataFrame, asking: np.ndarray | list[float]) -> list[Verdict]:
+    def verdict(
+        self,
+        x: pd.DataFrame,
+        asking: np.ndarray | list[float],
+        expected: np.ndarray | list[float] | None = None,
+    ) -> list[Verdict]:
         """Score asking prices (per bedroom per month) against the model.
 
         Args:
             x: One row per listing with the ``FEATURES`` columns (plus ``lat``/``lon`` for
                 the similar-listings count, if known).
             asking: The asking ``price_per_bedroom`` for each row.
+            expected: Expected prices to score against, overriding ``predict(x)``. Batch
+                scoring passes out-of-fold predictions here, so a listing the model was
+                fitted on is not scored against the model's memory of its own asking price.
 
         Returns:
             One ``Verdict`` per row.
         """
         asking = np.asarray(asking, dtype=float)
-        expected = self.predict(x)
+        expected = self.predict(x) if expected is None else np.asarray(expected, dtype=float)
         all_drivers = self.drivers(x)
         verdicts = []
         for i in range(len(x)):
