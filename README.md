@@ -8,20 +8,39 @@ and a small app scores one listing against it. UW Data Science Club, Fall 2026.
 database schema, layout, modelling plan and the week-by-week calendar.
 Decisions are logged in `docs/decisions.md`.
 
-## Status
+## Status (Nov 21, 2026)
 
-Nov 8, 2026: the daily sweep covers four Ontario university markets — Kitchener-Waterloo,
-Guelph, Hamilton and London — toward a 10,000-listing target (7,199 listings so far), and
-the Wayback archive rows (9,316 past ads, 2014 to 2026) can opt into training with
-`--archive`, which takes the clean table from ~5,500 rows to ~13,500. The Wayback lane can
-now also capture individual archived ad pages (full descriptions, stored scrubbed; schema
-v5 adds `archive_units`), and `housing.scrape.rescrub` re-applies the newest PII rules to
-raw pages already on disk. The pipeline rides out laptop sleep and network flaps
-(in-process caffeinate, sleep-aware retries, one bounded retry pass per sweep) and assigns
-dedup keys itself. Baselines on the live-only table: median lookup MAE $160, ridge $142 on
-grouped cross-validation. `docs/architecture.md` is the system map; `docs/pipeline.md` has
-the write rules; `docs/plan.md` has what comes next; `docs/sources.md` has every source's
-status and the Wayback results.
+**Data.** The daily sweep covers four Ontario university markets — Kitchener-Waterloo
+(3,784 listings), Hamilton (2,587), London (2,223) and Guelph (560) — 9,154 in total
+against Caden's 10,000 target, backed by 132,335 snapshots. The Wayback lane holds 10,965
+past ads (2014 to 2026) drawn from 3,260 captures, and 2,174 of the 2,796 inventoried ad
+pages have been downloaded and parsed for their full descriptions (stored scrubbed;
+schema v5 adds `archive_units`). Archive rows opt into training with `--archive`, which
+takes the clean table from 6,595 rows to 16,047.
+
+**Pipeline.** Runs unattended with a Discord report: it rides out laptop sleep and network
+flaps (in-process caffeinate, sleep-aware retries, one bounded retry pass per sweep),
+assigns dedup keys itself, and `housing.scrape.rescrub` re-applies the newest PII rules to
+raw pages already on disk.
+
+**Model.** Baselines on grouped 5-fold cross-validation of the live-only table: median
+lookup MAE $163 ± 5 (16.0%), ridge $146 ± 5 (14.5%); holding out the newest 25%, $172 and
+$153. Training with `--archive` is an experiment, not the default: scored on held-out
+Waterloo listings it makes ridge *worse*, $142 to $164, because 2014–2017 ads sit near
+$500/bed against $933 today (`notebooks/02_geography.ipynb`, decision 2026-11-21). Phase 2
+(LightGBM, per-unit-type calibrated range, SHAP drivers) is
+in progress on the unmerged branch `mark/lightgbm-v1`; its reported errors were measured
+on a partial table and have not yet been re-validated against this database, so `main`
+ships the baselines only.
+
+**Where things are.** `docs/architecture.md` is the system map; `docs/pipeline.md` has the
+write rules and the tier A/B feature split; `docs/plan.md` has what comes next and the open
+decisions; `docs/sources.md` has every source's status and the Wayback results;
+`docs/market.md` is the domain background the model rests on; `docs/field_audit.md` records
+what each schema field actually comes from. Under `notebooks/`: `01_eda.ipynb` (first look at
+the clean table, outputs stale as of Oct 24), `02_geography.ipynb` (whether non-Waterloo and
+archive rows help — they do not) and `03_error_analysis.ipynb` (where the error is, and the
+Phase 2 order of work).
 
 ## Setup
 
