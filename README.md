@@ -27,11 +27,14 @@ raw pages already on disk.
 lookup MAE $163 ± 5 (16.0%), ridge $146 ± 5 (14.5%); holding out the newest 25%, $172 and
 $153. Training with `--archive` is an experiment, not the default: scored on held-out
 Waterloo listings it makes ridge *worse*, $142 to $164, because 2014–2017 ads sit near
-$500/bed against $933 today (`notebooks/02_geography.ipynb`, decision 2026-11-21). Phase 2
-(LightGBM, per-unit-type calibrated range, SHAP drivers) is
-in progress on the unmerged branch `mark/lightgbm-v1`; its reported errors were measured
-on a partial table and have not yet been re-validated against this database, so `main`
-ships the baselines only.
+$500/bed against $933 today (`notebooks/02_geography.ipynb`, decision 2026-11-21).
+
+LightGBM v1 landed on Nov 18: log target, per-unit-type conformal range, SHAP drivers, and
+the HANDOFF section 2 verdict fields. Because the table holds four cities but the product
+only answers for one, `--eval-city` (default Kitchener-Waterloo) reports a KW-only block
+beside the pooled numbers. On KW live rows it scores **MAE $119 (12.0%)** against ridge $136
+and the lookup $152, with 82% time-split range coverage. That clears the Phase 2 checkpoint;
+error analysis is in `notebooks/03_error_analysis.ipynb`.
 
 **Where things are.** `docs/architecture.md` is the system map; `docs/pipeline.md` has the
 write rules and the tier A/B feature split; `docs/plan.md` has what comes next and the open
@@ -48,6 +51,9 @@ Requires [uv](https://docs.astral.sh/uv/). Python 3.11 is pinned in `.python-ver
 Copy `.env.example` to `.env` and set `HOUSING_HASH_SALT` (any random string) and, when you
 have one, `DISCORD_WEBHOOK_URL`.
 
+On macOS, LightGBM needs OpenMP: `brew install libomp`. Without it `import lightgbm` fails
+and `pytest` aborts during collection, not just on the model's own tests.
+
 ```sh
 uv sync                                  # create .venv and install dependencies
 uv run python -m housing.db.migrate      # create data/housing.db (gitignored)
@@ -59,6 +65,7 @@ uv run python -m housing.features.dedup        # assign dedup keys (the daily ru
 uv run python -m housing.scrape.backfill --summary   # state of the Wayback archive
 uv run python -m housing.scrape.rescrub --dry-run     # re-apply current PII rules to stored raw pages (drop --dry-run to write)
 uv run python -m housing.model.baseline        # clean-table size and baseline errors; --archive adds the Wayback rows
+uv run python -m housing.model.lgbm            # the Phase 2 model; --eval-city scores one market, --fix-labels, --save
 sh scripts/install_launchd.sh            # schedule the daily run at 06:30 on this Mac
 uv run pytest                            # tests
 uv run ruff check . && uv run ruff format --check .
